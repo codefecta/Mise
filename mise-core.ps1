@@ -1,6 +1,6 @@
 ﻿# Mise (shared edition) - core library. Dot-sourced by the runner, the tray and the builder.
 # Everything the routines can do lives here, driven by a JSON config:  %APPDATA%\Mise\config.json
-$script:MiseVersion = '0.6.0'
+$script:MiseVersion = '0.6.1'
 $script:IsWin = ($PSVersionTable.PSEdition -ne 'Core') -or [bool]$IsWindows
 $script:MiseDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:DataDir  = if ($env:MISE_DATA) { $env:MISE_DATA } elseif ($env:APPDATA) { Join-Path $env:APPDATA 'Mise' } else { Join-Path $HOME '.mise' }
@@ -25,7 +25,7 @@ $script:DefaultSettings = [ordered]@{
 }
 function New-MiseConfig { [pscustomobject]@{ version = 4; firstRunDone = $false; monitors = @(); routines = @(); settings = [pscustomobject]$script:DefaultSettings } }
 function Get-MiseSetting($cfg, [string]$k) {
-  try { if ($cfg.settings.PSObject.Properties.Name -contains $k) { return $cfg.settings.$k } } catch {}
+  try { if ($cfg.settings.PSObject.Properties.Name -contains $k) { $v = $cfg.settings.$k; if (-not ($k -eq 'updateRepo' -and -not "$v".Trim())) { return $v } } } catch {}
   return $script:DefaultSettings[$k]
 }
 function Set-MiseSetting([string]$k, $v) {
