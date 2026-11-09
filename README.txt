@@ -1,4 +1,4 @@
-﻿Mise (shared edition) 0.6.0 - everything in its place before you play
+﻿Mise (shared edition) 0.6.2 - everything in its place before you play
 (mise = short for 'mise en place', a chef's habit: everything in its place before service starts.)
 
 INSTALL

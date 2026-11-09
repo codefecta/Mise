@@ -697,6 +697,8 @@ function Test-Queues($lcu, [switch]$Quiet) {
     if (-not $Quiet) { Write-Host ("  {0} {1,-5} HTTP {2}  {3}" -f $(if ($good) { 'OK ' } else { 'NO ' }), $id, $r.Code, $mode) }
     if ($good -or $mode) { Invoke-Lcu $lcu '/lol-lobby/v2/lobby' 'DELETE' | Out-Null; Start-Sleep -Milliseconds 1500 }
   }
+  # no lobby opened at all = the client wasn't ready, not that every mode is gone: keep the old routes
+  if (-not $ok.Count) { Write-Host '  [Routes] no lobby opened - client not ready, routes kept'; return @{ ok = $ok; no = $no } }
   try { Set-Content -LiteralPath $routesFile -Value (@{ time = (Get-Date -Format 's'); ok = @($ok); no = @($no) } | ConvertTo-Json -Compress) -Encoding UTF8 } catch {}
   Write-Host "  [Routes] updated - working lobbies: $($ok -join ', ')"
   return @{ ok = $ok; no = $no }

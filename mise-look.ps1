@@ -44,6 +44,7 @@ public class MiseBtn : Button {
   public string Chip = "";         // row: region chip / setting: value
   public bool On = false;          // row: logged-in account / setting: switch is on
   public bool IsSwitch = false;    // setting: draw an ON / off switch instead of a value
+  public string Seg = "";          // setting / seg: two choices "A|B", On picks B
   public Color Surface = Color.FromArgb(23, 23, 26);
   public Color PanelC = Color.FromArgb(33, 33, 37);
   public Color HoverC = Color.FromArgb(45, 45, 51);
@@ -94,6 +95,17 @@ public class MiseBtn : Button {
       using (Pen pen = new Pen(border)) g.DrawPath(pen, p);
     }
   }
+  void DrawSeg(Graphics g, RectangleF pr) {
+    string[] parts = Seg.Split('|'); if (parts.Length < 2) return;
+    float half = pr.Width / 2f;
+    Pill(g, pr, PanelC, LineC, false);
+    RectangleF act = On ? new RectangleF(pr.X + half, pr.Y, half, pr.Height) : new RectangleF(pr.X, pr.Y, half, pr.Height);
+    Pill(g, act, Accent, Accent, true);
+    StringFormat cf = new StringFormat(StringFormatFlags.NoWrap); cf.Alignment = StringAlignment.Center; cf.LineAlignment = StringAlignment.Center;
+    Color dark = Mix(Color.FromArgb(20, 20, 22), Accent, 0.12f);
+    using (SolidBrush a1 = new SolidBrush(On ? MutedC : dark)) g.DrawString(parts[0], TinyFont, a1, new RectangleF(pr.X, pr.Y, half, pr.Height), cf);
+    using (SolidBrush a2 = new SolidBrush(On ? dark : MutedC)) g.DrawString(parts[1], TinyFont, a2, new RectangleF(pr.X + half, pr.Y, half, pr.Height), cf);
+  }
   protected override void OnPaint(PaintEventArgs pe) {
     Graphics g = pe.Graphics;
     g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -102,17 +114,18 @@ public class MiseBtn : Button {
     float pd = down ? 1.5f : 0f;
     RectangleF rc = new RectangleF(0.5f + pd, 0.5f + pd, Width - 2 - 2 * pd, Height - 2 - 2 * pd);
     Color fill = PanelC, border = LineC, txt = TextC;
-    if (Kind == "ghost") { fill = Surface; border = Surface; txt = Mix(MutedC, TextC, hv); }
+    if (Kind == "ghost" || Kind == "seg") { fill = Surface; border = Surface; txt = Mix(MutedC, TextC, hv); }
     else {
       fill = Mix(PanelC, HoverC, hv);
       if (down) fill = LineC;
     }
     if (Kind == "primary") { border = Accent; txt = Accent; fill = Mix(fill, Mix(PanelC, Accent, 0.16f), hv); }
+    if (Kind == "tool" && On) { border = Accent; txt = Accent; fill = Mix(Mix(PanelC, Accent, 0.14f), Mix(PanelC, Accent, 0.22f), hv); }
     if (Kind == "row" && On) { border = Mix(LineC, Accent, 0.55f); fill = Mix(Mix(PanelC, Accent, 0.10f), Mix(PanelC, Accent, 0.16f), hv); }
     if (!Enabled) { txt = Color.FromArgb(104, 102, 98); }
     using (GraphicsPath path = Round(rc, 9f)) {
       using (SolidBrush b = new SolidBrush(fill)) g.FillPath(b, path);
-      if (Kind != "ghost") using (Pen pen = new Pen(border)) g.DrawPath(pen, path);
+      if (Kind != "ghost" && Kind != "seg") using (Pen pen = new Pen(border)) g.DrawPath(pen, path);
     }
     StringFormat sf = new StringFormat(StringFormatFlags.NoWrap);
     sf.LineAlignment = StringAlignment.Center; sf.Trimming = StringTrimming.EllipsisCharacter;
@@ -138,10 +151,15 @@ public class MiseBtn : Button {
           StringFormat rf = new StringFormat(StringFormatFlags.NoWrap); rf.Alignment = StringAlignment.Far; rf.LineAlignment = StringAlignment.Center;
           using (SolidBrush mb = new SolidBrush(MutedC)) g.DrawString(Sub, SmallFont, mb, new RectangleF(right - 110, 0, 110, Height), rf);
         }
+      } else if (Kind == "seg") {
+        DrawSeg(g, new RectangleF(2, 3, Width - 5, Height - 7));
       } else if (Kind == "setting") {
-        g.DrawString(Text, Font, tb, new RectangleF(14, 0, Width - 130, Height), sf);
+        float segW = Seg.Length > 0 ? 170f : 0f;
+        g.DrawString(Text, Font, tb, new RectangleF(14, 0, Width - (Seg.Length > 0 ? segW + 30 : 130), Height), sf);
         float right = Width - 12;
-        if (IsSwitch) {
+        if (Seg.Length > 0) {
+          DrawSeg(g, new RectangleF(right - segW, (Height - 24) / 2f, segW, 24));
+        } else if (IsSwitch) {
           float pw = 46, ph = 22; RectangleF pr = new RectangleF(right - pw, (Height - ph) / 2f, pw, ph);
           StringFormat cf = new StringFormat(StringFormatFlags.NoWrap); cf.Alignment = StringAlignment.Center; cf.LineAlignment = StringAlignment.Center;
           if (On) {
@@ -154,9 +172,9 @@ public class MiseBtn : Button {
         } else if (Chip.Length > 0) {
           SizeF cs = g.MeasureString(Chip, TinyFont);
           float cw = cs.Width + 22; RectangleF cr = new RectangleF(right - cw, (Height - 22) / 2f, cw, 22);
-          Pill(g, cr, PanelC, LineC, false);
+          Pill(g, cr, PanelC, On ? Accent : LineC, false);
           StringFormat cf = new StringFormat(StringFormatFlags.NoWrap); cf.Alignment = StringAlignment.Center; cf.LineAlignment = StringAlignment.Center;
-          using (SolidBrush cb = new SolidBrush(TextC)) g.DrawString(Chip, TinyFont, cb, cr, cf);
+          using (SolidBrush cb = new SolidBrush(On ? Accent : TextC)) g.DrawString(Chip, TinyFont, cb, cr, cf);
         }
       } else {
         sf.Alignment = StringAlignment.Center;

@@ -160,6 +160,7 @@ $btnGear.Add_Click({
     'fix'   { Start-Job2 $riot @('-Core', '-Fix') 'Checking the client' 'quick'; return }
     'reset' { Reset-Mise; return }
     'about' { $form.TopMost = $false; Show-MiseAbout; Set-HomeTop }
+    'feedback' { $form.TopMost = $false; Show-MiseFeedback; Set-HomeTop }
   }
   if ("$(Get-MiseSetting $before 'accent')" -ne "$(Get-MiseSetting $script:cfg 'accent')" -or [bool](Get-MiseSetting $before 'animations') -ne [bool](Get-MiseSetting $script:cfg 'animations')) { Update-MiseLook $script:cfg; Restart-Home }
 })
@@ -208,6 +209,7 @@ $form.Controls.Add($qList)
 $btnQueue.Add_Click({
   $cur = [int](Get-MiseSetting $script:cfg 'queue')
   $no = @(); try { $rf = Join-Path $store '_routes.json'; if (Test-Path $rf) { $no = @((Get-Content -LiteralPath $rf -Raw | ConvertFrom-Json).no | ForEach-Object { [int]$_ }) } } catch {}
+  if ($no.Count -ge ($script:QueueList.Count - 2)) { $no = @() }   # a failed test run marked (almost) everything: ignore it
   $ids = @($script:QueueList | ForEach-Object { $_.Id } | Where-Object { $no -notcontains $_ })
   $i = [Array]::IndexOf($ids, $cur)
   $script:cfg = Set-MiseSetting 'queue' $ids[($i + 1) % $ids.Count]; Show-Opts

@@ -26,7 +26,16 @@ function New-UiBox($x, $y, $w, $h = 24) {
 }
 function New-UiCombo($x, $y, $w) {
   $c = New-Object Windows.Forms.ComboBox; $c.Location = New-Object Drawing.Point($x, $y); $c.Size = New-Object Drawing.Size($w, 24)
-  $c.DropDownStyle = 'DropDownList'; $c.FlatStyle = 'Flat'; $c.BackColor = $script:C.Panel; $c.ForeColor = $script:C.Text; return $c
+  $c.DropDownStyle = 'DropDownList'; $c.FlatStyle = 'Flat'; $c.BackColor = $script:C.Panel; $c.ForeColor = $script:C.Text
+  # drawn by Mise so the closed box matches the dark theme (Windows paints it white otherwise)
+  $c.DrawMode = 'OwnerDrawFixed'; $c.ItemHeight = 20
+  $c.Add_DrawItem({ param($s, $e)
+    if ($e.Index -lt 0) { return }
+    $sel = (($e.State -band [Windows.Forms.DrawItemState]::Selected) -ne 0) -and (($e.State -band [Windows.Forms.DrawItemState]::ComboBoxEdit) -eq 0)
+    $bg = New-Object Drawing.SolidBrush($(if ($sel) { $script:C.Accent } else { $script:C.Panel })); $e.Graphics.FillRectangle($bg, $e.Bounds); $bg.Dispose()
+    $fg = New-Object Drawing.SolidBrush($(if ($sel) { $script:C.Bg } else { $script:C.Text }))
+    $e.Graphics.DrawString("$($s.Items[$e.Index])", $s.Font, $fg, ($e.Bounds.X + 4), ($e.Bounds.Y + 2)); $fg.Dispose() })
+  return $c
 }
 function New-UiList($x, $y, $w, $h) {
   $l = New-Object Windows.Forms.ListBox; $l.Location = New-Object Drawing.Point($x, $y); $l.Size = New-Object Drawing.Size($w, $h)
@@ -189,7 +198,9 @@ function Show-MiseSettings {
   $f.Controls.Add((New-Label 'GitHub repository (owner/name), empty = no update check' $script:fSmall $script:C.Muted $M $y $cw 18)); $y += 20
   $rt = New-MiseText $M $y ($cw - 108) "$(Get-MiseSetting $cfg 'updateRepo')"; $repo = $rt.Box
   $bChk = New-Btn 'Check now' ($M + $cw - 100) $y 100 32
-  $bChk.Add_Click({ $null = Set-MiseSetting 'updateRepo' $repo.Text.Trim(); $r = Test-MiseUpdate $true; [Windows.Forms.MessageBox]::Show($r.Message, 'Mise') | Out-Null })
+  $bChk.Add_Click({ $null = Set-MiseSetting 'updateRepo' $repo.Text.Trim(); $r = Test-MiseUpdate $true
+    if ($r.Available) { if ([Windows.Forms.MessageBox]::Show("$($r.Message)`n`nInstall it now? Mise restarts for a few seconds.", 'Mise', 'YesNo') -eq 'Yes') { try { Install-MiseUpdate $r } catch { [Windows.Forms.MessageBox]::Show("Update failed: $($_.Exception.Message)", 'Mise') | Out-Null } } }
+    else { [Windows.Forms.MessageBox]::Show($r.Message, 'Mise') | Out-Null } })
   $y += 44
   $f.Controls.Add((New-Label 'TROUBLESHOOTING' $script:fTiny $script:C.Muted $M $y 200 14)); $y += 20
   $hw = [int](($cw - 8) / 2)
@@ -197,11 +208,78 @@ function Show-MiseSettings {
   $bFix.Add_Click({ $script:settingsAction = 'fix'; $f.Close() })
   $bRes.Add_Click({ $script:settingsAction = 'reset'; $f.Close() })
   $tipS = New-Object Windows.Forms.ToolTip; $tipS.SetToolTip($bRes, 'Stops everything Mise is running and starts it fresh. Routines and settings stay.')
-  $bAbout = New-Btn 'About Mise' $M $y $cw 30 'ghost'; $bAbout.Add_Click({ $script:settingsAction = 'about'; $f.Close() }); $y += 38
+  $bFb = New-Btn 'Send feedback' $M $y $hw 30 'ghost'; $bFb.Add_Click({ $script:settingsAction = 'feedback'; $f.Close() })
+  $bAbout = New-Btn 'About Mise' ($M + $hw + 8) $y $hw 30 'ghost'; $bAbout.Add_Click({ $script:settingsAction = 'about'; $f.Close() }); $y += 38
   $done = New-Btn 'Done' $M $y $cw 36 'primary'; $done.Add_Click({ $f.Close() }); $y += 36 + 18
-  $f.Controls.AddRange(@($bAnim, $bCorner, $bPos, $bMon, $rt.Panel, $bChk, $bFix, $bRes, $bAbout, $done))
+  $f.Controls.AddRange(@($bAnim, $bCorner, $bPos, $bMon, $rt.Panel, $bChk, $bFix, $bRes, $bFb, $bAbout, $done))
   $f.ClientSize = New-Object Drawing.Size($W, $y)
   $f.Add_FormClosing({ $null = Set-MiseSetting 'updateRepo' $repo.Text.Trim() })
+  [void]$f.ShowDialog()
+}
+
+# ---------- small input box in the Mise look; returns the text, or $null when cancelled ----------
+function Show-MiseInput([string]$title, [string]$label, [string]$value = '') {
+  $W = 380; $M = 22; $cw = $W - 2 * $M
+  $f = New-MiseDialog $title $W 200; $y = 58
+  $f.Controls.Add((New-Label $label $script:fSmall $script:C.Muted $M $y $cw 20)); $y += 24
+  $tb = New-MiseText $M $y $cw $value; $f.Controls.Add($tb.Panel); $y += 44
+  $script:inputResult = $null
+  $ok = New-Btn 'Save' $M $y $cw 36 'primary'; $ok.Add_Click({ $script:inputResult = $tb.Box.Text.Trim(); $f.Close() }); $f.Controls.Add($ok); $y += 36 + 18
+  $tb.Box.Add_KeyDown({ param($s, $e) if ($e.KeyCode -eq 'Enter') { $e.SuppressKeyPress = $true; $script:inputResult = $tb.Box.Text.Trim(); $f.Close() } })
+  $f.Add_Shown({ $tb.Box.Focus(); $tb.Box.SelectAll() })
+  $f.ClientSize = New-Object Drawing.Size($W, $y)
+  [void]$f.ShowDialog()
+  return $script:inputResult
+}
+
+# ---------- feedback (bug or wish; sends only what the user typed plus version, Windows build and screen count) ----------
+function Get-FeedbackQueuePath { Join-Path $script:DataDir '_feedback-queue.json' }
+function Send-FeedbackOne($item) {
+  if (-not $script:FeedbackForm) { return $false }
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $body = @{}
+    foreach ($k in @('type', 'message', 'name', 'info')) { if ($script:FeedbackFields[$k]) { $body[$script:FeedbackFields[$k]] = "$($item.$k)" } }
+    Invoke-WebRequest -Uri $script:FeedbackForm -Method Post -Body $body -UseBasicParsing -TimeoutSec 10 | Out-Null
+    return $true
+  } catch { return $false }
+}
+# try everything waiting in the queue; returns how many are still waiting
+function Send-FeedbackQueue {
+  $qp = Get-FeedbackQueuePath; if (-not (Test-Path $qp)) { return 0 }
+  $left = @()
+  try { foreach ($it in @(Get-Content -LiteralPath $qp -Raw | ConvertFrom-Json)) { if (-not (Send-FeedbackOne $it)) { $left += $it } } } catch { return 0 }
+  if ($left.Count) { ConvertTo-Json @($left) -Depth 3 | Set-Content -LiteralPath $qp -Encoding UTF8 } else { Remove-Item -LiteralPath $qp -Force -ErrorAction SilentlyContinue }
+  return $left.Count
+}
+function Show-MiseFeedback {
+  $W = 460; $M = 22; $cw = $W - 2 * $M
+  $f = New-MiseDialog 'Send feedback' $W 400; $y = 58
+  $f.Controls.Add((New-Label 'Found a bug or want something? Tell me. Only what you type is sent, plus the Mise version, Windows version and how many screens you use. No account names, no passwords.' $script:fSmall $script:C.Muted $M $y $cw 52)); $y += 58
+  $script:fbType = 'Bug'
+  $bBug = New-Btn 'Bug' $M $y 120 32; $bWish = New-Btn 'Wish' ($M + 128) $y 120 32
+  $bBug.On = $true
+  $bBug.Add_Click({ $script:fbType = 'Bug'; $bBug.On = $true; $bWish.On = $false; $bBug.Invalidate(); $bWish.Invalidate() })
+  $bWish.Add_Click({ $script:fbType = 'Wish'; $bWish.On = $true; $bBug.On = $false; $bBug.Invalidate(); $bWish.Invalidate() })
+  $f.Controls.AddRange(@($bBug, $bWish)); $y += 42
+  $msg = New-MiseText $M $y $cw; $msg.Panel.Height = 120; $msg.Box.Multiline = $true; $msg.Box.ScrollBars = 'Vertical'; $f.Controls.Add($msg.Panel); $y += 128
+  $f.Controls.Add((New-Label 'YOUR NAME (optional)' $script:fTiny $script:C.Muted $M $y 200 14)); $y += 18
+  $nm = New-MiseText $M $y $cw; $f.Controls.Add($nm.Panel); $y += 42
+  $note = New-Label '' $script:fSmall $script:C.Muted $M $y $cw 20; $f.Controls.Add($note); $y += 26
+  $send = New-Btn 'Send' $M $y $cw 36 'primary'; $f.Controls.Add($send); $y += 36 + 18
+  $send.Add_Click({
+    $t = $msg.Box.Text.Trim(); if ($t.Length -lt 3) { $note.Text = 'Write a few words first.'; return }
+    $os = ''; try { $os = (Get-CimInstance Win32_OperatingSystem).Caption + ' ' + [Environment]::OSVersion.Version.Build } catch {}
+    $info = "Mise $($script:MiseVersion) | $os | screens: $([Windows.Forms.Screen]::AllScreens.Count)"
+    $item = [pscustomobject]@{ type = $script:fbType; message = $t; name = $nm.Box.Text.Trim(); info = $info; time = (Get-Date -Format s) }
+    if (Send-FeedbackOne $item) { $null = Send-FeedbackQueue; [Windows.Forms.MessageBox]::Show('Sent. Thanks!', 'Mise') | Out-Null }
+    else {
+      $qp = Get-FeedbackQueuePath; $all = @(); try { if (Test-Path $qp) { $all = @(Get-Content -LiteralPath $qp -Raw | ConvertFrom-Json) } } catch {}
+      $all += $item; ConvertTo-Json @($all) -Depth 3 | Set-Content -LiteralPath $qp -Encoding UTF8
+      [Windows.Forms.MessageBox]::Show('Saved. Mise sends it as soon as it can.', 'Mise') | Out-Null
+    }
+    $f.Close() })
+  $f.ClientSize = New-Object Drawing.Size($W, $y)
   [void]$f.ShowDialog()
 }
 
@@ -231,39 +309,102 @@ function Install-MiseUpdate($u) {
   Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$($inst.FullName)`" -Quiet"
 }
 
+# ---------- silent updates: download in the background, install when nothing is going on ----------
+function Get-UpdateReadyPath { Join-Path $script:DataDir '_update-ready.json' }
+function Save-MiseUpdate($u) {
+  $dir = Join-Path $script:DataDir "_update\$($u.Version)"
+  Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  $zip = Join-Path $dir 'mise.zip'
+  Invoke-WebRequest -Uri $u.Url -OutFile $zip -UseBasicParsing -Headers @{ 'User-Agent' = 'Mise-updater' } -TimeoutSec 60
+  Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force
+  $inst = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'install.ps1' | Select-Object -First 1
+  if (-not $inst) { throw 'the download has no install.ps1' }
+  Set-Content -LiteralPath (Get-UpdateReadyPath) -Value (@{ version = $u.Version; installer = $inst.FullName } | ConvertTo-Json -Compress) -Encoding UTF8
+}
+# safe = no League game or client, no routine running, no Mise window open
+function Test-UpdateSafe {
+  if (Get-Process -Name 'League of Legends', 'LeagueClientUx' -ErrorAction SilentlyContinue) { return $false }
+  try { if (Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match 'mise-run\.ps1|riot-league\.ps1|mise-home\.ps1|mise-builder\.ps1' }) { return $false } } catch { return $false }
+  return $true
+}
+# installs a downloaded update if it is newer and the moment is safe; returns $true when the installer was started
+function Start-PendingUpdate {
+  $rp = Get-UpdateReadyPath; if (-not (Test-Path $rp)) { return $false }
+  try { $r = Get-Content -LiteralPath $rp -Raw | ConvertFrom-Json } catch { Remove-Item -LiteralPath $rp -Force -ErrorAction SilentlyContinue; return $false }
+  $newer = $false; try { $newer = ([version]$r.version -gt [version]$script:MiseVersion) } catch {}
+  if (-not $newer -or -not (Test-Path -LiteralPath $r.installer)) { Remove-Item -LiteralPath $rp -Force -ErrorAction SilentlyContinue; return $false }
+  if (-not (Test-UpdateSafe)) { return $false }
+  Remove-Item -LiteralPath $rp -Force -ErrorAction SilentlyContinue
+  Set-Content -LiteralPath (Join-Path $script:DataDir '_updated-from.txt') -Value $script:MiseVersion -Encoding UTF8
+  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$($r.installer)`" -Quiet"
+  return $true
+}
+
 # ---------- League accounts, step by step ----------
 $script:Regions = @('EUW', 'EUNE', 'TR', 'NA', 'KR', 'BR', 'LAN', 'LAS', 'OCE', 'RU', 'JP')
 function Show-AccountWizard {
+  # one step at a time: 1 open Riot Client, 2 log in, 3 name it and save. After saving, the next account starts at step 2.
   $W = 420; $M = 18; $cw = $W - 2 * $M
-  $f = New-MiseDialog 'Add League accounts' $W 470
-  $y = 54
-  $steps = "1.  Open Riot Client and log in. Tick 'Stay signed in'.`r`n2.  Do NOT sign out afterwards.`r`n3.  Type a nickname, pick the region, press Save.`r`n`r`nMise closes Riot Client, keeps the login (never the password) and reopens it on a fresh login screen, so you can add the next account the same way."
-  $l = New-Label $steps $script:fSmall $script:C.Text $M $y $cw 118; $f.Controls.Add($l); $y += 124
-  $bOpen = New-Btn 'Open Riot Client' $M $y $cw 34; $f.Controls.Add($bOpen); $y += 46
-  $bOpen.Add_Click({ $rc = "$env:SystemDrive\Riot Games\Riot Client\RiotClientServices.exe"; if (Test-Path $rc) { Start-Process $rc } else { [Windows.Forms.MessageBox]::Show("Riot Client doesn't exist on this PC.", 'Mise') | Out-Null } })
-  $f.Controls.Add((New-Label 'NICKNAME' $script:fTiny $script:C.Muted $M $y 200 14)); $f.Controls.Add((New-Label 'REGION' $script:fTiny $script:C.Muted ($M + $cw - 110) $y 110 14)); $y += 18
-  $nick = New-UiBox $M $y ($cw - 120); $nick.Font = $script:fStatus
-  $reg = New-UiCombo ($M + $cw - 110) $y 110; foreach ($r in $script:Regions) { [void]$reg.Items.Add($r) }; $reg.SelectedIndex = 0
-  $f.Controls.AddRange(@($nick, $reg)); $y += 38
-  $bSave = New-Btn 'Save this account' $M $y $cw 36 'primary'; $f.Controls.Add($bSave); $y += 46
-  $msg = New-Label '' $script:fSmall $script:C.Muted $M $y $cw 40; $f.Controls.Add($msg); $y += 44
-  $f.Controls.Add((New-Label 'SAVED' $script:fTiny $script:C.Muted $M $y 200 14)); $y += 18
-  $list = New-Label '' $script:fSmall $script:C.Text $M $y $cw 60; $f.Controls.Add($list); $y += 66
+  $f = New-MiseDialog 'Add League accounts' $W 400
+  $stepL = New-Label '' $script:fTiny $script:C.Accent $M 54 $cw 16; $f.Controls.Add($stepL)
+  $head = New-Label '' $script:fBig $script:C.Text $M 72 $cw 26; $f.Controls.Add($head)
+  $body = New-Label '' $script:fSmall $script:C.Muted $M 102 $cw 58; $f.Controls.Add($body)
+  # step 1
+  $bOpen = New-Btn 'Open Riot Client' $M 166 $cw 36 'primary'; $f.Controls.Add($bOpen)
+  # step 2
+  $bIn = New-Btn "I'm logged in" $M 166 $cw 36 'primary'; $f.Controls.Add($bIn)
+  # step 3
+  $lN = New-Label 'NICKNAME' $script:fTiny $script:C.Muted $M 166 200 14; $lR = New-Label 'REGION' $script:fTiny $script:C.Muted ($M + $cw - 110) 166 110 14
+  $nick = New-UiBox $M 184 ($cw - 120); $nick.Font = $script:fStatus
+  $reg = New-UiCombo ($M + $cw - 110) 184 110; foreach ($r in $script:Regions) { [void]$reg.Items.Add($r) }; $reg.SelectedIndex = 0
+  $bSave = New-Btn 'Save this account' $M 222 $cw 36 'primary'
+  $f.Controls.AddRange(@($lN, $lR, $nick, $reg, $bSave))
+  # after saving
+  $bNext = New-Btn 'Add another account' $M 166 $cw 36 'primary'; $f.Controls.Add($bNext)
+  $bBack = New-Btn 'Back' $M 270 90 30 'ghost'; $f.Controls.Add($bBack)
+  # always: what is saved, and Done
+  $f.Controls.Add((New-Label 'SAVED' $script:fTiny $script:C.Muted $M 306 200 14))
+  $list = New-Label '' $script:fSmall $script:C.Text $M 322 $cw 36; $f.Controls.Add($list)
+  $bDone = New-Btn 'Done' $M 362 $cw 34; $bDone.Add_Click({ $f.Close() }); $f.Controls.Add($bDone)
+  $f.ClientSize = New-Object Drawing.Size($W, 414)
   $fill = { $a = @(Get-RiotAccounts); $list.Text = $(if ($a.Count) { $a -join '   ' } else { 'none yet' }) }; & $fill
-  $bDone = New-Btn 'Done' $M $y $cw 34; $bDone.Add_Click({ $f.Close() }); $f.Controls.Add($bDone); $y += 34 + 18
-  $f.ClientSize = New-Object Drawing.Size($W, $y)
+  $show = {
+    param([int]$n)
+    $script:accStep = $n
+    $bOpen.Visible = ($n -eq 1); $bIn.Visible = ($n -eq 2); $bNext.Visible = ($n -eq 4)
+    foreach ($c in @($lN, $lR, $nick, $reg, $bSave)) { $c.Visible = ($n -eq 3) }
+    $bBack.Visible = ($n -eq 2 -or $n -eq 3)
+    switch ($n) {
+      1 { $stepL.Text = 'STEP 1 OF 3'; $head.Text = 'Open Riot Client'; $body.Text = 'Mise saves the login Riot Client keeps when you tick Stay signed in. Never your password.' }
+      2 { $stepL.Text = 'STEP 2 OF 3'; $head.Text = 'Log in'; $body.Text = "Log in to the account and tick 'Stay signed in'. Don't sign out afterwards: that cancels the saved login." }
+      3 { $stepL.Text = 'STEP 3 OF 3'; $head.Text = 'Name it'; $body.Text = 'A short nickname you will recognise, and the region. Mise then closes Riot Client and reopens it on a fresh login screen.'; $nick.Focus() | Out-Null }
+    }
+  }
+  $bOpen.Add_Click({
+    $rc = "$env:SystemDrive\Riot Games\Riot Client\RiotClientServices.exe"
+    if (Test-Path $rc) { Start-Process $rc; & $show 2 } else { $body.Text = "Riot Client doesn't exist on this PC. Install it from riotgames.com, then try again." }
+  })
+  $bIn.Add_Click({ & $show 3 })
+  $bBack.Add_Click({ & $show ($script:accStep - 1) })
+  $bNext.Add_Click({ & $show 2 })
   $bSave.Add_Click({
     $n = ($nick.Text.Trim() -replace '[\\/:*?"<>|]', '').ToUpper()
-    if (-not $n) { $msg.Text = 'Type a nickname first.'; return }
+    if (-not $n) { $body.Text = 'Type a nickname first.'; return }
     $full = "$n $($reg.SelectedItem)"
-    $msg.Text = "Saving $full ..."; $f.Refresh()
+    if (@(Get-RiotAccounts) -contains $full) { $body.Text = "$full is already saved. Pick another nickname, or right-click it in the Mise window to update its login."; return }
+    $body.Text = "Saving $full ..."; $bSave.Enabled = $false; $f.Refresh()
     $mod = Join-Path $script:MiseDir 'modules\riot-league.ps1'
     $p = Start-Process powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$mod`"", '-Core', '-Save', "`"$full`"", '-Next') -WindowStyle Hidden -PassThru
-    $p.WaitForExit()
-    if ($p.ExitCode -eq 0) { $msg.Text = "Saved $full. Riot Client is on a fresh login screen: log in to the next account, or press Done."; $nick.Text = '' }
-    else { $msg.Text = "Could not save - is Riot Client logged in?" }
+    $p.WaitForExit(); $bSave.Enabled = $true
     & $fill
+    if ($p.ExitCode -eq 0) {
+      $nick.Text = ''; & $show 4
+      $stepL.Text = 'SAVED'; $head.Text = "$full is ready"; $body.Text = 'Riot Client is back on its login screen. Add the next account, or press Done.'
+    } else { $body.Text = "Could not save. Is Riot Client open and logged in, with 'Stay signed in' ticked?" }
   })
+  # Riot Client already running: skip straight to logging in
+  $f.Add_Shown({ if (Get-Process -Name 'RiotClientServices', 'Riot Client' -ErrorAction SilentlyContinue) { & $show 2 } else { & $show 1 } })
   [void]$f.ShowDialog()
 }
 

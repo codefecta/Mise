@@ -1,6 +1,9 @@
 ﻿# Mise (shared edition) - core library. Dot-sourced by the runner, the tray and the builder.
 # Everything the routines can do lives here, driven by a JSON config:  %APPDATA%\Mise\config.json
-$script:MiseVersion = '0.6.1'
+$script:MiseVersion = '0.6.2'
+# feedback goes to a Google Form (no account needed); filled in when the form exists ('' = keep entries in a local queue)
+$script:FeedbackForm = ''
+$script:FeedbackFields = @{ type = ''; message = ''; name = ''; info = '' }
 $script:IsWin = ($PSVersionTable.PSEdition -ne 'Core') -or [bool]$IsWindows
 $script:MiseDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:DataDir  = if ($env:MISE_DATA) { $env:MISE_DATA } elseif ($env:APPDATA) { Join-Path $env:APPDATA 'Mise' } else { Join-Path $HOME '.mise' }
@@ -60,10 +63,44 @@ function Get-MiseConfig {
       if (-not ($r.PSObject.Properties.Name -contains 'card')) { $r | Add-Member card $null }
     }
     return $c
-  } catch { Write-Log "config unreadable: $($_.Exception.Message)"; return (New-MiseConfig) }
+  } catch {
+    Write-Log "config unreadable: $($_.Exception.Message)"
+    if (-not $script:cfgRestoring -and (Restore-MiseConfigBackup)) { $script:cfgRestoring = $true; try { return (Get-MiseConfig) } finally { $script:cfgRestoring = $false } }
+    return (New-MiseConfig)
+  }
 }
+# which routine is running now (set when a routine starts or is arranged, cleared when it exits)
+function Get-ActiveRoutineId { $f = Join-Path $script:DataDir '_active-routine.txt'; if (Test-Path $f) { try { return (Get-Content -LiteralPath $f -Raw).Trim() } catch {} }; return '' }
+function Set-ActiveRoutineId([string]$id) { $f = Join-Path $script:DataDir '_active-routine.txt'; if ($id) { Set-Content -LiteralPath $f -Value $id -Encoding UTF8 } else { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }
 
+# the last 5 good versions of the settings file live in %APPDATA%\Mise\backups (at most one every 10 minutes)
+function Backup-MiseConfig {
+  try {
+    if (-not (Test-Path $script:CfgPath)) { return }
+    $bd = Join-Path $script:DataDir 'backups'; New-Item -ItemType Directory -Force -Path $bd | Out-Null
+    $last = Get-ChildItem -LiteralPath $bd -Filter 'config-*.json' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($last -and ((Get-Date) - $last.LastWriteTime).TotalMinutes -lt 10) { return }
+    $null = Get-Content -LiteralPath $script:CfgPath -Raw -Encoding UTF8 | ConvertFrom-Json   # only back up a file that reads
+    Copy-Item -LiteralPath $script:CfgPath -Destination (Join-Path $bd ("config-{0}.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))) -Force
+    Get-ChildItem -LiteralPath $bd -Filter 'config-*.json' | Sort-Object LastWriteTime -Descending | Select-Object -Skip 5 | Remove-Item -Force -ErrorAction SilentlyContinue
+  } catch {}
+}
+# the settings file is broken: keep it aside and put the newest backup that reads back in its place
+function Restore-MiseConfigBackup {
+  $bd = Join-Path $script:DataDir 'backups'; if (-not (Test-Path $bd)) { return $false }
+  foreach ($b in @(Get-ChildItem -LiteralPath $bd -Filter 'config-*.json' | Sort-Object LastWriteTime -Descending)) {
+    try {
+      $null = Get-Content -LiteralPath $b.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+      try { Copy-Item -LiteralPath $script:CfgPath -Destination (Join-Path $script:DataDir 'config-broken.json') -Force } catch {}
+      Copy-Item -LiteralPath $b.FullName -Destination $script:CfgPath -Force
+      Write-Log "config was unreadable - restored $($b.Name)"
+      return $true
+    } catch {}
+  }
+  return $false
+}
 function Save-MiseConfig($cfg) {
+  Backup-MiseConfig
   $tmp = "$($script:CfgPath).tmp"
   $json = $cfg | ConvertTo-Json -Depth 12
   [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
@@ -268,13 +305,16 @@ function Track-ForExit($step, [IntPtr]$h, $ctx) {
   if ($mode -ne 'close' -and $mode -ne 'restore') { return }
   if (@($ctx.Track | Where-Object { $_.h -eq [int64]$h }).Count) { return }
   $r = $null; try { $r = [MiseWin]::VisibleRect($h) } catch {}
-  $ctx.Track += [pscustomobject]@{ h = [int64]$h; mode = $mode; name = "$($step.name)"; rect = $(if ($r) { @($r) } else { @() }) }
+  $pn = ''; try { $pn = Get-ProcName ([MiseWin2]::Pid($h)) } catch {}
+  $ctx.Track += [pscustomobject]@{ h = [int64]$h; mode = $mode; name = "$($step.name)"; proc = $pn; rect = $(if ($r) { @($r) } else { @() }) }
 }
 function Save-ExitTrack($routine, $ctx) {
   $f = Join-Path $script:DataDir "_exit-$($routine.id).json"
   $old = @(); if (Test-Path $f) { try { $old = @(Get-Content -LiteralPath $f -Raw | ConvertFrom-Json) } catch {} }
-  $all = @($old) + @($ctx.Track) | Where-Object { $_ }
-  if (@($all).Count) { Set-Content -LiteralPath $f -Value (ConvertTo-Json @($all) -Depth 5) -Encoding UTF8 }
+  # one entry per window, only windows that still exist (handles get reused by Windows later)
+  $seen = @{}; $all = @()
+  foreach ($e in (@($ctx.Track) + @($old) | Where-Object { $_ })) { $k = [int64]$e.h; if ($seen[$k] -or -not [MiseWin]::IsWindow([IntPtr]$k)) { continue }; $seen[$k] = 1; $all += $e }
+  if ($all.Count) { Set-Content -LiteralPath $f -Value (ConvertTo-Json @($all) -Depth 5) -Encoding UTF8 } else { Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue }
 }
 function Invoke-ExitTrack($routine) {
   $f = Join-Path $script:DataDir "_exit-$($routine.id).json"
@@ -283,6 +323,8 @@ function Invoke-ExitTrack($routine) {
   foreach ($t in $items) {
     $h = [IntPtr][int64]$t.h
     if (-not [MiseWin]::IsWindow($h)) { continue }
+    # the handle must still belong to the same program, else it is someone else's window now
+    if ($t.proc) { $pn = ''; try { $pn = Get-ProcName ([MiseWin2]::Pid($h)) } catch {}; if ($pn -ne $t.proc) { continue } }
     if ($t.mode -eq 'close') { [MiseWin]::Close($h); Say "[$($t.name)] closed" }
     elseif ($t.mode -eq 'restore' -and @($t.rect).Count -eq 4) { [MiseWin]::PlaceExact($h, [int]$t.rect[0], [int]$t.rect[1], [int]$t.rect[2], [int]$t.rect[3]); Say "[$($t.name)] put back" }
   }
@@ -290,6 +332,8 @@ function Invoke-ExitTrack($routine) {
 }
 
 # ---------- Spotify miniplayer: the always-on-top Spotify window; opened through accessibility if needed ----------
+# the Mini player button's name in Spotify's common languages (it is found by name, never by screen position)
+$script:MiniPlayerNames = '(?i)mini\s*-?\s*(player|oynat|lecteur|r?reproductor|spieler|lettore|leitor|odtwarzacz|speler|spelare|afspiller|soitin)|\u043c\u0438\u043d\u0438\s*-?\s*\u043f\u043b\u0435\u0435\u0440|\u30df\u30cb\u30d7\u30ec\u30fc\u30e4\u30fc|\ubbf8\ub2c8 \ud50c\ub808\uc774\uc5b4'
 function Open-SpotifyMini([IntPtr]$main) {
   try {
     Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop
@@ -303,7 +347,7 @@ function Open-SpotifyMini([IntPtr]$main) {
     for ($i = 0; $i -lt 12; $i++) {
       foreach ($e in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $all)) {
         $n = ''; try { $n = $e.Current.Name } catch {}
-        if ($n -match 'mini\s*-?\s*player') {
+        if ($n -match $script:MiniPlayerNames) {
           try { ($e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)).Invoke(); return $true } catch {}
           try { $r = $e.Current.BoundingRectangle; if ($r.Width -gt 0) { [MiseWin]::ClickXY([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2)); return $true } } catch {}
         }

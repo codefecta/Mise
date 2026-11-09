@@ -8,6 +8,8 @@ trap { try { Add-Content -LiteralPath (Join-Path $script:DataDir 'tray-error.log
 $first = $false
 $mutex = New-Object System.Threading.Mutex($true, 'Local\MiseTray', [ref]$first)
 if (-not $first) { exit }
+# an update downloaded earlier installs now, before anything starts (the installer restarts the tray)
+try { if (Start-PendingUpdate) { $mutex.ReleaseMutex(); exit } } catch {}
 
 Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @'
 using System;
@@ -125,6 +127,7 @@ function Build-TrayMenu {
   $cm.Items.Clear()
   $o = $cm.Items.Add('Open Mise'); $o.Font = New-Object Drawing.Font($o.Font, [Drawing.FontStyle]::Bold); $o.Add_Click({ Open-Home })
   $rs = $cm.Items.Add('Reset Mise'); $rs.Add_Click({ Reset-Mise })
+  $fb = $cm.Items.Add('Send feedback'); $fb.Add_Click({ Show-MiseFeedback })
   $fg = $cm.Items.Add('Forget everything (start over)'); $fg.Add_Click({ Reset-FirstTime })
   if ($script:update) { $u = $cm.Items.Add("Update to Mise $($script:update.Version)"); $u.Add_Click({ try { Install-MiseUpdate $script:update } catch { $ni.ShowBalloonTip(6000, 'Mise', "Update failed: $($_.Exception.Message)", 'Warning') } }) }
   [void]$cm.Items.Add('-')
@@ -137,15 +140,15 @@ function Build-TrayMenu {
     [void]$cm.Items.Add('-')
     foreach ($n in $accts) { $it = $cm.Items.Add("Switch to $n"); $it.Tag = $n; $it.Add_Click({ Start-AccountSwitch $this.Tag }) }
   }
-  if ($script:cfg.routines.Count) { [void]$cm.Items.Add('-') }
-  foreach ($r in $script:cfg.routines) {
-    $x = $cm.Items.Add("Exit '$($r.name)'"); $x.Tag = $r.id; $x.Add_Click({ Stop-RoutineById $this.Tag })
-  }
+  # the running routine (if any): one line to exit it
+  $act = Get-ActiveRoutineId; $ar = if ($act) { $script:cfg.routines | Where-Object { $_.id -eq $act } | Select-Object -First 1 } else { $null }
+  if ($ar) { [void]$cm.Items.Add('-'); $x = $cm.Items.Add("Exit '$($ar.name)' (running)"); $x.Font = New-Object Drawing.Font($x.Font, [Drawing.FontStyle]::Bold); $x.Tag = $ar.id; $x.Add_Click({ Stop-RoutineById $this.Tag }) }
+  [void]$cm.Items.Add('-')
   $mA = New-Object Windows.Forms.ToolStripMenuItem('League: auto-accept match'); $mA.Checked = (Get-Setting 'autoAccept'); $mA.Add_Click({ Set-Setting 'autoAccept' (-not (Get-Setting 'autoAccept')) }); [void]$cm.Items.Add($mA)
   $mU = New-Object Windows.Forms.ToolStripMenuItem('League: open u.gg for my champion'); $mU.Checked = (Get-Setting 'champPage'); $mU.Add_Click({ Set-Setting 'champPage' (-not (Get-Setting 'champPage')) }); [void]$cm.Items.Add($mU)
   [void]$cm.Items.Add('-')
   $e = $cm.Items.Add('Edit routines...'); $e.Add_Click({ Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$editor`"") })
-  $q = $cm.Items.Add('Quit Mise'); $q.Add_Click({ Stop-AllMise; $timer.Stop(); $lcuTimer.Stop(); $toastTimer.Stop(); $ni.Visible = $false; [Windows.Forms.Application]::Exit() })
+  $q = $cm.Items.Add('Quit Mise'); $q.Add_Click({ Stop-AllMise; try { $null = Show-AllTaskbars } catch {}; $timer.Stop(); $lcuTimer.Stop(); $toastTimer.Stop(); $ni.Visible = $false; [Windows.Forms.Application]::Exit() })
 }
 $cm.Add_Opening({ $script:cfg = Get-MiseConfig; Build-TrayMenu })
 # single click shows the menu after the double-click window passes; a double click opens the Mise window
@@ -214,7 +217,7 @@ $acceptAt  = 9      # seconds into the 12 s ready-check at which Accept is press
 $uggUrls = @{ Mayhem = 'https://u.gg/lol/champions/aram-mayhem/{slug}-aram-mayhem'; Aram = 'https://u.gg/lol/champions/aram/{slug}-aram'; Rift = 'https://u.gg/lol/champions/{slug}/build/{role}' }
 $slugFix = @{ 'nunuwillump' = 'nunu'; 'renataglasc' = 'renata' }
 $script:accepted = $false; $script:lastChamp = 0; $script:aramChamp = 0; $script:aramSince = $null; $script:champCache = @{}
-$script:gameStart = $null; $script:gameAccount = ''
+$script:gameStart = $null; $script:gameAccount = ''; $script:uggWin = 0
 function Get-Setting([string]$k) { return [bool](Get-MiseSetting $script:cfg $k) }
 function Set-Setting([string]$k, [bool]$v) { $script:cfg = Set-MiseSetting $k $v }
 function Active-Account { $f = Join-Path $store '_active.txt'; if (Test-Path $f) { (Get-Content -LiteralPath $f -Raw).Trim() } else { 'unknown' } }
@@ -257,21 +260,25 @@ function Open-Ugg($lcu, $champId, $session) {
 # open a u.gg page where a routine's u.gg tile is (same screen and spot), as a clean window of the default browser
 function Open-UggUrl([string]$url) {
   $tile = $null; $owner = $null
-  foreach ($r in $script:cfg.routines) { $tile = @($r.tiles | Where-Object { $_.kind -eq 'ugg' })[0]; if ($tile) { $owner = $r; break } }
-  foreach ($w in @(Get-WinSnapshot | Where-Object { $_.Title -like '*U.GG*' })) { [MiseWin]::Close($w.H) }
-  Start-Sleep -Milliseconds 900
+  # the u.gg spot of the routine that ran last, else of the first routine that has one
+  $lid = ''; try { $lid = (Get-Content -LiteralPath (Join-Path $script:DataDir '_last-routine.txt') -Raw).Trim() } catch {}
+  $rs = @(@($script:cfg.routines) | Where-Object { $_.id -eq $lid }) + @($script:cfg.routines)
+  foreach ($r in $rs) { $tile = @($r.tiles | Where-Object { $_.kind -eq 'ugg' })[0]; if ($tile) { $owner = $r; break } }
+  # close only the u.gg window Mise opened last time (never a browser window the user opened, it may hold other tabs)
+  if ($script:uggWin -and [MiseWin]::IsWindow([IntPtr]$script:uggWin)) { [MiseWin]::Close([IntPtr]$script:uggWin); Start-Sleep -Milliseconds 600 }
+  $script:uggWin = 0
   $browser = Get-DefaultBrowser
   $web = [pscustomobject]@{ kind = 'web'; url = $url; clean = $true; hint = '' }
   $before = @(Get-WinSnapshot | ForEach-Object { [int64]$_.H })
   if (-not (Start-Tile $web $browser)) { return }
-  if (-not $tile) { return }
+  if (-not $tile) { Start-Sleep -Seconds 3; $nw = @(Get-WinSnapshot | Where-Object { $before -notcontains [int64]$_.H -and (Get-ProcName $_.Pid) -eq $browser.Proc }) | Select-Object -First 1; if ($nw) { $script:uggWin = [int64]$nw.H }; return }
   $lives = @(Get-LiveMonitors $script:cfg)
   $px = Get-TilePx $tile $lives $owner; if (-not $px) { return }
   $end = (Get-Date).AddSeconds(15)
   while ((Get-Date) -lt $end) {
     $snap = @(Get-WinSnapshot); $fresh = @($snap | Where-Object { $before -notcontains [int64]$_.H } | ForEach-Object { [int64]$_.H })
     $h = Find-TileWindow $web $snap $fresh $browser
-    if ($h -ne [IntPtr]::Zero) { if ($browser.Clean) { try { [MiseWin]::StripCaption($h) } catch {} }; Set-WindowPlace $h $px; return }
+    if ($h -ne [IntPtr]::Zero) { $script:uggWin = [int64]$h; if ($browser.Clean) { try { [MiseWin]::StripCaption($h) } catch {} }; Set-WindowPlace $h $px; return }
     Start-Sleep -Milliseconds 400
   }
 }
@@ -349,13 +356,33 @@ $timer.Start()
 # update check: once a day, 30 s after start, only when a GitHub repository is set in Settings
 $updTimer = New-Object Windows.Forms.Timer; $updTimer.Interval = 30000
 $updTimer.Add_Tick({
-  $updTimer.Stop()
+  $updTimer.Interval = 3600000   # first check 30 s after start, then hourly
+  # once per start: routines whose apps or screens are gone
+  if (-not $script:healthDone) {
+    $script:healthDone = $true
+    try {
+      $lives = @(Get-LiveMonitors $script:cfg); $msgs = @()
+      foreach ($r in @($script:cfg.routines)) {
+        $miss = @(@($r.tiles) | Where-Object { ($_.kind -eq 'app' -or $_.kind -eq 'spotify') -and ($_.exe -or $_.appid) -and -not (Test-TileInstalled $_) } | ForEach-Object { $_.name })
+        $offs = @(@($r.tiles) | Where-Object { $t = $_; -not ($lives | Where-Object { $_.id -eq $t.monitor }) })
+        $parts = @(); if ($miss.Count) { $parts += "$($miss -join ', ') not installed" }; if ($offs.Count) { $parts += "$($offs.Count) tile(s) on a screen that isn't connected" }
+        if ($parts.Count) { $msgs += "'$($r.name)': $($parts -join '; ')" }
+      }
+      if ($msgs.Count) { $ni.ShowBalloonTip(10000, 'Mise: check your routines', ((@($msgs | Select-Object -First 3) -join "`n") + "`nOpen Edit routines to fix it."), 'Warning') }
+    } catch {}
+  }
+  try { $null = Send-FeedbackQueue } catch {}
   try {
+    # just updated: say so once
+    $uf = Join-Path $script:DataDir '_updated-from.txt'
+    if (Test-Path $uf) { $from = (Get-Content -LiteralPath $uf -Raw).Trim(); Remove-Item -LiteralPath $uf -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath (Join-Path $script:DataDir '_update') -Recurse -Force -ErrorAction SilentlyContinue; $ni.ShowBalloonTip(6000, 'Mise', "Updated to Mise $($script:MiseVersion) (was $from).", 'Info') }
+    # a downloaded update waits for a quiet moment: no League, no routine, no Mise window
+    if (Test-Path (Get-UpdateReadyPath)) { if (Test-UpdateSafe) { if (Start-PendingUpdate) { $ni.Visible = $false; [Windows.Forms.Application]::Exit() } }; return }
     $last = "$(Get-MiseSetting $script:cfg 'lastUpdateCheck')"
     $due = (-not $last) -or (((Get-Date) - [datetime]$last).TotalHours -ge 24)
     if ("$(Get-MiseSetting $script:cfg 'updateRepo')" -and $due) {
       $u = Test-MiseUpdate
-      if ($u.Available) { $script:update = $u; $ni.ShowBalloonTip(8000, 'Mise', "$($u.Message) Click the tray icon > Update.", 'Info') }
+      if ($u.Available) { $script:update = $u; Save-MiseUpdate $u }
     }
   } catch {}
 })

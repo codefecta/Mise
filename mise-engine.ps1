@@ -52,7 +52,21 @@ public class MiseWin2 {
     return r;
   }
   // out of maximized / minimized state, so a move sticks
-  public static void Unsnap(IntPtr h) { if (IsZoomed(h) || IsIconic(h)) ShowWindow(h, 9); }
+  [DllImport("kernel32.dll")] static extern void Sleep(uint ms);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [StructLayout(LayoutKind.Sequential)] public struct WINDOWPLACEMENT { public int length, flags, showCmd; public int ptMinX, ptMinY, ptMaxX, ptMaxY; public RECT rcNormal; }
+  [DllImport("user32.dll")] static extern bool GetWindowPlacement(IntPtr h, ref WINDOWPLACEMENT p);
+  // out of maximized / minimized state, so a move sticks (a window minimized while maximized needs two restores)
+  public static void Unsnap(IntPtr h) {
+    for (int i = 0; i < 3 && (IsZoomed(h) || IsIconic(h)); i++) { ShowWindow(h, 9); Sleep(60); }
+  }
+  // size of the window in its normal (restored) state, also while minimized
+  public static long NormalArea(IntPtr h) {
+    WINDOWPLACEMENT p = new WINDOWPLACEMENT(); p.length = Marshal.SizeOf(p);
+    if (!GetWindowPlacement(h, ref p)) return 0;
+    return (long)(p.rcNormal.Right - p.rcNormal.Left) * (p.rcNormal.Bottom - p.rcNormal.Top);
+  }
+  public static uint Pid(IntPtr h) { uint pid; GetWindowThreadProcessId(h, out pid); return pid; }
   public static int[] Visible(IntPtr h) {
     RECT r;
     if (DwmGetWindowAttribute(h, 9, out r, Marshal.SizeOf(typeof(RECT))) != 0) { if (!GetWindowRect(h, out r)) return null; }
@@ -145,9 +159,23 @@ function Get-DefaultBrowser {
   $b.Exe = $exe; $b.Proc = if ($exe) { [IO.Path]::GetFileNameWithoutExtension($exe) } else { '' }
   return $b
 }
+# Discord-style apps (Squirrel) install each version in its own app-x.y.z folder; after an update the saved path is gone:
+# use the newest app-* folder next to it
+function Resolve-TileExe([string]$exe) {
+  if (-not $exe -or (Test-Path -LiteralPath $exe)) { return $exe }
+  if ($exe -match '^(.*)\\app-[\d\.]+\\(.+)$') {
+    $root = $Matches[1]; $rest = $Matches[2]
+    if (Test-Path -LiteralPath $root) {
+      $new = Get-ChildItem -LiteralPath $root -Directory -Filter 'app-*' | Sort-Object { try { [version]($_.Name.Substring(4)) } catch { [version]'0.0' } } -Descending |
+        ForEach-Object { Join-Path $_.FullName $rest } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+      if ($new) { return $new }
+    }
+  }
+  return $exe
+}
 function Test-TileInstalled($tile) {
   if ($tile.appid) { return [bool](Get-StartApps | Where-Object { $_.AppID -eq $tile.appid }) -or [bool](Get-AppxPackage -Name (($tile.appid -split '_')[0]) -ErrorAction SilentlyContinue) }
-  if ($tile.exe) { return (Test-Path -LiteralPath $tile.exe) }
+  if ($tile.exe) { return (Test-Path -LiteralPath (Resolve-TileExe $tile.exe)) }
   return $false
 }
 function Start-Tile($tile, $browser) {
@@ -161,9 +189,10 @@ function Start-Tile($tile, $browser) {
     }
     default {
       if ($tile.appid) { Start-Process 'explorer.exe' "shell:AppsFolder\$($tile.appid)"; return $true }
-      if ($tile.exe -and (Test-Path -LiteralPath $tile.exe)) {
+      $exe = Resolve-TileExe "$($tile.exe)"
+      if ($exe -and (Test-Path -LiteralPath $exe)) {
         # Discord/Squirrel apps start through Update.exe next to the app folder; starting the versioned exe directly works too
-        Start-Process $tile.exe; return $true
+        Start-Process $exe; return $true
       }
       return $false
     }
@@ -178,14 +207,23 @@ function Find-TileWindow($tile, $snap, $freshIds, $browser) {
       $pn = Get-ProcName $w.Pid
       if (-not $browser -or $pn -ne $browser.Proc) { continue }
       $isNew = $freshIds -contains [int64]$w.H
-      $hinted = $tile.hint -and $w.Title -like "*$($tile.hint)*"
+      $hinted = "$($tile.hint)".Length -ge 4 -and $w.Title -like "*$($tile.hint)*"
       if ($isNew -or $hinted) { $cands += $w }
       continue
     }
     if ($tile.kind -eq 'spotify') { if ((Get-ProcName $w.Pid) -eq 'Spotify') { $cands += $w }; continue }
     # an app added from the list whose program is not known yet: the first new window after it started (learned, see Invoke-TileRoutine)
     # a Store app already open: its window is hosted by ApplicationFrameHost, so it is matched by title
-    if ($tile.appid -and -not $tile.exe -and $w.Cls -eq 'ApplicationFrameWindow' -and $tile.name -and $w.Title -like "*$($tile.name)*") { $cands += $w; continue }
+    # Store apps: the window belongs to the package (its program lives in WindowsApps\<package>...), or it is an
+    # ApplicationFrameHost window with the app's name in the title. A learned process name is never trusted for them.
+    if ($tile.appid -and -not $tile.exe) {
+      $pkg = (("$($tile.appid)" -split '!')[0] -split '_')[0]
+      $tn = if ($tile.hint) { "$($tile.hint)" } else { "$($tile.name)" }
+      $p = Get-WindowExe ([uint32]$w.Pid)
+      if ($pkg -and $p -like "*\WindowsApps\$pkg*") { $cands += $w; continue }
+      if ($w.Cls -eq 'ApplicationFrameWindow' -and $tn -and $w.Title -like "*$tn*") { $cands += $w }
+      continue
+    }
     if (-not $tile.exe -and -not $tile.proc) { if ($freshIds -contains [int64]$w.H -and (-not $browser -or (Get-ProcName $w.Pid) -ne $browser.Proc)) { $cands += $w }; continue }
     $ok = $false
     if ($tile.exe) { $p = Get-WindowExe ([uint32]$w.Pid); if ($p -and $p -ieq $tile.exe) { $ok = $true } }
@@ -194,7 +232,7 @@ function Find-TileWindow($tile, $snap, $freshIds, $browser) {
     if ($ok) { $cands += $w }
   }
   if (-not $cands.Count) { return [IntPtr]::Zero }
-  $best = $cands | Sort-Object { $r = [MiseWin2]::Visible($_.H); if ($r) { - $r[2] * $r[3] } else { 0 } } | Select-Object -First 1
+  $best = $cands | Sort-Object @{ Expression = { [MiseWin]::IsIconic($_.H) } }, @{ Expression = { [MiseWin2]::NormalArea($_.H) }; Descending = $true } | Select-Object -First 1
   return $best.H
 }
 
@@ -214,19 +252,18 @@ function Get-TilePx($tile, $lives, $routine) {
 function Set-SpotifyMiniPlace($tile, $px) {
   $wins = @(Get-WinSnapshot | Where-Object { (Get-ProcName $_.Pid) -eq 'Spotify' })
   if (-not $wins.Count) { return $false }
-  foreach ($w in $wins) { $r = [MiseWin2]::Visible($w.H); Say ("[Spotify-diag] h=" + $w.H + " cls=" + $w.Cls + " top=" + [MiseWin]::IsTopmost($w.H) + " min=" + [MiseWin]::IsIconic($w.H) + " rect=" + $(if ($r) { $r -join ',' } else { 'none' }) + " title='" + $w.Title + "'") }
   $mini = $wins | Where-Object { [MiseWin]::IsTopmost($_.H) } | Select-Object -First 1
   if (-not $mini) {
     # the real Spotify window is the biggest one that is not always-on-top (Spotify also has small helper windows)
     $main = $wins | Sort-Object { $r = [MiseWin2]::Visible($_.H); if ($r) { - $r[2] * $r[3] } else { 0 } } | Select-Object -First 1
     for ($try = 0; $try -lt 3 -and -not $mini; $try++) {
-      $ok = Open-SpotifyMini $main.H; Say "[Spotify-diag] try $try open button clicked: $ok (main h=$($main.H))"
+      $ok = Open-SpotifyMini $main.H; if (-not $ok) { Say "[Spotify] mini player button not found (try $($try + 1))" }
       if ($ok) { Start-Sleep -Seconds 2; $mini = Get-WinSnapshot | Where-Object { (Get-ProcName $_.Pid) -eq 'Spotify' -and [MiseWin]::IsTopmost($_.H) } | Select-Object -First 1 }
       if (-not $mini) { Start-Sleep -Seconds 3 }
     }
   }
   if (-not $mini) { return $false }
-  foreach ($w in @(Get-WinSnapshot | Where-Object { (Get-ProcName $_.Pid) -eq 'Spotify' })) { if ($w.H -ne $mini.H) { [MiseWin]::ShowWindow($w.H, 6) | Out-Null } }
+  foreach ($w in @(Get-WinSnapshot | Where-Object { (Get-ProcName $_.Pid) -eq 'Spotify' })) { if ($w.H -ne $mini.H) { [MiseWin]::ShowWindow($w.H, 9) | Out-Null; [MiseWin]::ShowWindow($w.H, 6) | Out-Null } }
   Set-WindowPlace $mini.H $px
   # Spotify resizes the mini player itself right after a move: watch it briefly and put it back
   for ($i = 0; $i -lt 6; $i++) {
@@ -281,6 +318,12 @@ function Get-ShortWebName([string]$title, [string]$url) {
   return 'Web page'
 }
 function Get-FriendlyAppName([string]$proc, [string]$exe, [string]$title) {
+  $n = Get-FriendlyAppName0 $proc $exe $title
+  # Store apps often report names like 'WhatsApp.Root': keep the readable part
+  if ($n -match '^([A-Za-z][\w ]+)\.(Root|App|Desktop|Main|Client|Shell)$') { $n = $Matches[1] }
+  return $n
+}
+function Get-FriendlyAppName0([string]$proc, [string]$exe, [string]$title) {
   try { if ($exe) { $d = (Get-Item -LiteralPath $exe).VersionInfo.FileDescription; if ($d -and $d.Length -lt 40) { return $d.Trim() } } } catch {}
   if (-not $exe -and $title) { $t2 = ($title -replace '\s+-\s+[^-]+$', '').Trim(); if ($t2.Length -gt 26) { $t2 = $t2.Substring(0, 25).Trim() + '...' }; if ($t2) { return $t2 } }
   if ($proc) { return $proc }
@@ -348,10 +391,12 @@ function Invoke-TileRoutine($cfg, $routine, $ctx, [string]$mode = 'run') {
     Say "Exiting '$($routine.name)'"
     Invoke-ExitTrack $routine
     $n = Show-AllTaskbars; if ($n) { Say "[taskbar] restored" }
+    if ((Get-ActiveRoutineId) -eq $routine.id) { Set-ActiveRoutineId '' }
     return
   }
   Say "$(if ($mode -eq 'arrange') { 'Arranging' } else { 'Starting' }) '$($routine.name)'"
   if ($mode -eq 'run') { $nh = Hide-OpenWindows; if ($nh) { Say "[desktop] $nh open windows minimized" } }
+  if ($routine.id -and (@($routine.tiles).Count -or @($routine.taskbar).Count)) { Set-ActiveRoutineId $routine.id }
   # 1. League takes longest: it starts first, everything else is arranged while it loads
   if ($mode -eq 'run' -and $routine.league) { Start-LeaguePart $cfg $routine $ctx $lives }
   # 2. taskbars this routine hides
@@ -371,7 +416,7 @@ function Invoke-TileRoutine($cfg, $routine, $ctx, [string]$mode = 'run') {
   foreach ($t in $order) {
     if ($running -contains $t.id) { $todo[$t.id] = @{ Tile = $t; Started = $null; Retried = $true; Deadline = $t0.AddSeconds(5) }; continue }
     if ($mode -eq 'arrange') { continue }
-    if ($t.kind -eq 'web' -and $t.hint -and (Find-TileWindow $t $startSnap @() $browser) -ne [IntPtr]::Zero) { $todo[$t.id] = @{ Tile = $t; Started = $null; Retried = $true; Deadline = $t0.AddSeconds(5) }; continue }
+    if ($t.kind -eq 'web' -and "$($t.hint)".Length -ge 4 -and (Find-TileWindow $t $startSnap @() $browser) -ne [IntPtr]::Zero) { $todo[$t.id] = @{ Tile = $t; Started = $null; Retried = $true; Deadline = $t0.AddSeconds(5) }; continue }
     if ($t.kind -ne 'web' -and -not (Test-TileInstalled $t)) { Say "[$($t.name)] app doesn't exist on this PC - skipped"; continue }
     if ($t.kind -eq 'web' -and -not $browser.Exe) { Say "[$($t.name)] no browser found - skipped"; continue }
     if (Start-Tile $t $browser) { Say "[$($t.name)] starting"; $todo[$t.id] = @{ Tile = $t; Started = Get-Date; Retried = $false; Deadline = (Get-Date).AddSeconds((Get-WaitSeconds $timings (Get-TimingKey $t))) } }
@@ -392,7 +437,7 @@ function Invoke-TileRoutine($cfg, $routine, $ctx, [string]$mode = 'run') {
           Track-ForExit ([pscustomobject]@{ onExit = $t.exit; name = $t.name }) $h $ctx
         }
         if ($job.Started) { $timings = Add-Timing $timings (Get-TimingKey $t) ((Get-Date) - $job.Started).TotalSeconds }
-        if (-not $t.exe -and -not $t.proc -and $t.kind -eq 'app') { $w = $snap | Where-Object { $_.H -eq $h } | Select-Object -First 1; if ($w) { $learned[$t.id] = @{ proc = (Get-ProcName $w.Pid); cls = $w.Cls } } }
+        if (-not $t.exe -and -not $t.appid -and -not $t.proc -and $t.kind -eq 'app') { $w = $snap | Where-Object { $_.H -eq $h } | Select-Object -First 1; if ($w) { $learned[$t.id] = @{ proc = (Get-ProcName $w.Pid); cls = $w.Cls } } }
         $placed[$id] = [int64]$h; $todo.Remove($id); continue
       }
       if ((Get-Date) -gt $job.Deadline) {
@@ -408,6 +453,7 @@ function Invoke-TileRoutine($cfg, $routine, $ctx, [string]$mode = 'run') {
     $c2 = Get-MiseConfig; $r2 = @($c2.routines) | Where-Object { $_.id -eq $routine.id } | Select-Object -First 1
     if ($r2) { foreach ($t2 in @($r2.tiles)) { if ($learned.ContainsKey($t2.id)) { $t2.proc = $learned[$t2.id].proc } }; Save-MiseConfig $c2 }
   }
+  Save-ExitTrack $routine $ctx
   # 5. League ready (it places its own window where the League tile is)
   foreach ($p in @($ctx.Pending)) { $p.WaitForExit(); Say $(if ($p.ExitCode -eq 0) { "[riot] ready" } else { "[riot] needs a look (code $($p.ExitCode))" }) }
   # 6. some apps move themselves once loaded: put the placed ones back once

@@ -38,7 +38,7 @@ function Save-UndoPoint { Push-Undo $script:undo @{ tiles = @($script:R.tiles); 
 function Restore-Undo {
   $s = Pop-Undo $script:undo; if (-not $s) { return }
   $script:R.tiles = @($s.tiles | Where-Object { $_ }); $script:R.card = $s.card; $script:R.taskbar = @($s.taskbar | Where-Object { $_ })
-  $script:dirty = $true; Update-Side; $canvas.Invalidate()
+  $script:dirty = $true; $script:helper = ''; Update-Side; $canvas.Invalidate()
 }
 function Set-Dirty { $script:dirty = $true; $script:marks = @{}; $script:checks = @() }
 # a Mise-styled yes/no (no grey Windows boxes)
@@ -72,7 +72,8 @@ function Resolve-AppIdPath([string]$appId) {
 # ======================= the window =======================
 $form = New-Object Windows.Forms.Form
 $form.Text = 'Mise - routines'; $form.StartPosition = 'CenterScreen'; $form.KeyPreview = $true
-$form.ClientSize = New-Object Drawing.Size(1240, 760); $form.MinimumSize = New-Object Drawing.Size(1000, 640)
+$wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+$form.ClientSize = New-Object Drawing.Size([Math]::Max(1240, [int]($wa.Width * 0.8)), [Math]::Max(760, [int]($wa.Height * 0.82))); $form.MinimumSize = New-Object Drawing.Size(1000, 640)
 if (Test-Path $script:Icon) { try { $form.Icon = New-Object Drawing.Icon($script:Icon) } catch {} }
 $form.BackColor = $script:C.Bg; $form.ForeColor = $script:C.Text
 $form.Add_HandleCreated({ param($s, $e) try { $v = 2; [MiseUi]::DwmSetWindowAttribute($s.Handle, 33, [ref]$v, 4) | Out-Null; $v = 1; [MiseUi]::DwmSetWindowAttribute($s.Handle, 20, [ref]$v, 4) | Out-Null } catch {} })
@@ -136,8 +137,29 @@ function Update-List {
     $b = New-Btn $nm 0 $y 196 40 'row'; $b.Num = "$i"; $b.Tag = $r.id; $b.Chip = $(if ($r.league) { 'LoL' } else { '' })
     $b.On = ($script:R -and $r.id -eq $script:R.id)
     $b.Add_Click({ param($s, $e) Open-Routine $s.Tag })
+    $b.Add_MouseUp({ param($s, $e) if ($e.Button -eq 'Right') { Show-RoutineMenu $s.Tag $s } })
     $listPanel.Controls.Add($b); $y += 46
   }
+}
+# right-click a routine in the list: duplicate it
+function Show-RoutineMenu([string]$id, $ctl) {
+  $m = New-Object Windows.Forms.ContextMenuStrip
+  $m.BackColor = $script:C.Panel; $m.ForeColor = $script:C.Text; $m.ShowImageMargin = $false
+  $iD = $m.Items.Add('Duplicate'); $iD.Tag = $id; $iD.Add_Click({ param($s, $e) Copy-RoutineEntry $s.Tag })
+  $m.Show($ctl, (New-Object Drawing.Point(20, $ctl.Height - 6)))
+}
+function Copy-RoutineEntry([string]$id) {
+  if (-not (Confirm-Leave)) { return }
+  $cf = Get-MiseConfig
+  $src = @($cf.routines) | Where-Object { $_.id -eq $id } | Select-Object -First 1; if (-not $src) { return }
+  $d = $src | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+  $d.id = New-Id; if ($d.PSObject.Properties.Name -contains 'hotkey') { $d.hotkey = '' }
+  $names = @($cf.routines | ForEach-Object { $_.name }); $n = "$($src.name) copy"; $k = 2; while ($names -contains $n) { $n = "$($src.name) copy $k"; $k++ }
+  $d.name = $n
+  foreach ($t in @($d.tiles)) { $t.id = New-Id }
+  $cf.routines = @($cf.routines) + $d; Save-MiseConfig $cf; $script:cfg = Get-MiseConfig
+  $script:dirty = $false
+  Set-Routine (Copy-Routine (@($script:cfg.routines) | Where-Object { $_.id -eq $d.id } | Select-Object -First 1))
 }
 function Confirm-Leave {
   if (-not $script:dirty) { return $true }
@@ -302,7 +324,7 @@ $canvas.Add_Paint({
     $bp = New-Object Drawing.Pen($script:C.Accent, 1.5); $g.DrawRectangle($bp, $box.X, $box.Y, $box.Width, $box.Height); $bp.Dispose()
     $g.DrawString('Start here', $script:fBig, $acc, ($box.X + 16), ($box.Y + 12))
     $g.DrawString("1. Open your apps and put them roughly in place.`n2. Press Copy my screen.`n3. Fine-tune here on the map.", $script:fSmall, $text, (New-Object Drawing.RectangleF(($box.X + 16), ($box.Y + 44), ($box.Width - 32), 90)))
-  } elseif ($script:helper) { $g.DrawString($script:helper, $script:fSmall, $acc, 12, ($canvas.ClientSize.Height - 26)) } else { $g.DrawString('Ctrl+Z undoes a move, Delete removes the selected tile. Click Taskbar or Layout above a screen to change them.', $script:fSmall, $muted, 12, ($canvas.ClientSize.Height - 26)) }
+  } elseif ($script:helper) { $g.DrawString($script:helper, $script:fSmall, $acc, 12, ($canvas.ClientSize.Height - 26)) } else { $g.DrawString('Right-click a tile for rename and more. Ctrl+Z undoes, Delete removes the selected tile.', $script:fSmall, $muted, 12, ($canvas.ClientSize.Height - 26)) }
   $g.DrawString('Ctrl+Z undo', $script:fTiny, $muted, ($canvas.ClientSize.Width - 80), 6)
   $muted.Dispose(); $text.Dispose(); $acc.Dispose()
 })
@@ -323,6 +345,7 @@ function Set-CursorFor($hit) {
 $canvas.Add_MouseDown({
   param($s, $e)
   try { $form.ActiveControl = $null } catch {}
+  if ($e.Button -eq 'Right' -and $script:R) { $hit = Get-Hit $e.Location; if ($hit.Tile) { $script:sel = $hit.Tile.id; Update-Side; $canvas.Invalidate(); Show-TileMenu $hit.Tile $e.Location }; return }
   if ($e.Button -ne 'Left' -or -not $script:R) { return }
   $hit = Get-Hit $e.Location
   switch ($hit.Kind) {
@@ -339,7 +362,13 @@ $canvas.Add_MouseMove({
   param($s, $e)
   if (-not $script:R) { return }
   $d = $script:drag
-  if (-not $d) { $script:hover = Get-Hit $e.Location; Set-CursorFor $script:hover; $canvas.Invalidate(); return }
+  if (-not $d) {
+    # repaint only when what is under the mouse changes (or a grip follows the mouse), not on every pixel
+    $old = $script:hover; $script:hover = Get-Hit $e.Location; Set-CursorFor $script:hover
+    $was = if ($old) { "$($old.Kind)|$($old.Tile.id)|$($old.Edge)" } else { '' }; $now = "$($script:hover.Kind)|$($script:hover.Tile.id)|$($script:hover.Edge)"
+    if ($was -ne $now -or $script:hover.Kind -eq 'grip') { $canvas.Invalidate() }
+    return
+  }
   switch ($d.Mode) {
     'grip' {
       $v = $d.Hit.V; $ed = $d.Hit.Edge
@@ -381,13 +410,38 @@ $canvas.Add_MouseMove({
 $canvas.Add_MouseUp({ param($s, $e) if ($script:drag) { $script:drag = $null; Update-Side; $canvas.Invalidate() } })
 $canvas.Add_MouseLeave({ $script:hover = $null; $canvas.Invalidate() })
 
+function Rename-Tile($t) {
+  $form.TopMost = $false
+  $n = Show-MiseInput 'Rename tile' 'Name shown on the map and in the progress pop-up' "$($t.name)"
+  # Store apps are found by their window title: keep the original name as the match before renaming
+  if ($n) { Save-UndoPoint; if ($t.kind -eq 'app' -and $t.appid -and -not $t.exe -and -not $t.hint) { $t.hint = $t.name }; $t.name = $n; Set-Dirty; Update-Side; $canvas.Invalidate() }
+}
+# right-click a tile: the common actions in one place
+function Show-TileMenu($t, $pt) {
+  $m = New-Object Windows.Forms.ContextMenuStrip
+  $m.BackColor = $script:C.Panel; $m.ForeColor = $script:C.Text; $m.ShowImageMargin = $false
+  $iR = $m.Items.Add('Rename...'); $iR.Tag = $t.id; $iR.Add_Click({ param($s, $e) $tt = Get-Tile $s.Tag; if ($tt) { Rename-Tile $tt } })
+  if ($t.kind -ne 'league' -and $t.kind -ne 'ugg') {
+    $iE = $m.Items.Add($(if ($t.exit -eq 'close') { 'On exit: Closes (click for Stays open)' } else { 'On exit: Stays open (click for Closes)' })); $iE.Tag = $t.id
+    $iE.Add_Click({ param($s, $e) Save-UndoPoint; $tt = Get-Tile $s.Tag; $tt.exit = $(if ($tt.exit -eq 'close') { 'leave' } else { 'close' }); Set-Dirty; Update-Side; $canvas.Invalidate() })
+  }
+  $iF = $m.Items.Add('Bring to front'); $iF.Tag = $t.id
+  $iF.Add_Click({ param($s, $e) Save-UndoPoint; $tt = Get-Tile $s.Tag; $script:R.tiles = @(@(Get-Tiles | Where-Object { $_.id -ne $s.Tag }) + $tt); Set-Dirty; $canvas.Invalidate() })
+  $iB = $m.Items.Add('Send to back'); $iB.Tag = $t.id
+  $iB.Add_Click({ param($s, $e) Save-UndoPoint; $tt = Get-Tile $s.Tag; $script:R.tiles = @(@($tt) + @(Get-Tiles | Where-Object { $_.id -ne $s.Tag })); Set-Dirty; $canvas.Invalidate() })
+  [void]$m.Items.Add('-')
+  $iX = $m.Items.Add('Remove from routine'); $iX.Tag = $t.id
+  $iX.Add_Click({ param($s, $e) Save-UndoPoint; $script:R.tiles = @(Get-Tiles | Where-Object { $_.id -ne $s.Tag }); $script:sel = ''; Set-Dirty; Update-Side; $canvas.Invalidate() })
+  $m.Show($canvas, $pt)
+}
+
 function Show-PresetMenu($v, $pt) {
   $m = New-Object Windows.Forms.ContextMenuStrip
   $m.BackColor = $script:C.Panel; $m.ForeColor = $script:C.Text; $m.ShowImageMargin = $false
   $presets = Get-Presets ([bool]$v.Live.Vertical)
   foreach ($k in $presets.Keys) {
     $it = $m.Items.Add($k); $it.Tag = @{ Slots = $presets[$k]; Mon = $v.Live.id }
-    $it.Add_Click({ param($s, $e) Save-UndoPoint; $mine = @(Get-Tiles | Where-Object { $_.monitor -eq $s.Tag.Mon -and $_.kind -ne 'league' }); Set-Preset $mine $s.Tag.Slots | Out-Null; Set-Dirty; $canvas.Invalidate() })
+    $it.Add_Click({ param($s, $e) Save-UndoPoint; $mine = @(Get-Tiles | Where-Object { $_.monitor -eq $s.Tag.Mon -and $_.kind -ne 'league' -and -not ($_.kind -eq 'spotify' -and $_.mini) }); $mini = @(Get-Tiles | Where-Object { $_.monitor -eq $s.Tag.Mon -and $_.kind -eq 'spotify' -and $_.mini })[0]; $lim = if ($mini -and [double]$mini.rect.y -gt 0.5) { [double]$mini.rect.y } else { 1.0 }; $sl = @($s.Tag.Slots | ForEach-Object { @{ x = [double]$_.x; y = [double]$_.y * $lim; w = [double]$_.w; h = [double]$_.h * $lim } }); Set-Preset $mine $sl | Out-Null; $script:R.tiles = @(@(Get-Tiles | Where-Object { -not ($_.kind -eq 'spotify' -and $_.mini) }) + @(Get-Tiles | Where-Object { $_.kind -eq 'spotify' -and $_.mini })); Set-Dirty; $canvas.Invalidate() })
   }
   $m.Show($canvas, $pt)
 }
@@ -407,13 +461,6 @@ function Update-Side {
   $bK.Add_Click({ $script:hkCapture = $true; Update-Side })
   Add-Side $bK 44
   if ($script:hkMsg) { $null = Add-SideLabel $script:hkMsg $script:fSmall $script:C.Muted 40 }
-  $null = Add-SideLabel 'When you exit this routine, every app...' $script:fSmall $script:C.Muted 22
-  $row = New-Object Windows.Forms.Panel; $row.Height = 34; $row.BackColor = $script:C.Bg
-  $bCA = New-Btn 'Closes' 0 0 152 32; $bLA = New-Btn 'Stays open' 158 0 152 32
-  $tip.SetToolTip($bCA, 'Set every app in this routine to close when you exit it'); $tip.SetToolTip($bLA, 'Set every app in this routine to stay open when you exit it')
-  $bCA.Add_Click({ Save-UndoPoint; foreach ($t in Get-Tiles) { if ($t.kind -ne 'league' -and $t.kind -ne 'ugg') { $t.exit = 'close' } }; Set-Dirty; Update-Side })
-  $bLA.Add_Click({ Save-UndoPoint; foreach ($t in Get-Tiles) { $t.exit = 'leave' }; Set-Dirty; Update-Side })
-  $row.Controls.AddRange(@($bCA, $bLA)); Add-Side $row 42
   $bCard = New-Btn $(if ($script:R.card) { 'Mise pop-up: placed on the map' } else { 'Mise pop-up: place it on the map' }) 0 0 310 34
   $bCard.Add_Click({
     Save-UndoPoint
@@ -429,6 +476,7 @@ function Update-Side {
   if ($t) {
     $null = Add-SideLabel 'TILE' $script:fTiny $script:C.Muted 20
     $null = Add-SideLabel $t.name $script:fBig $script:C.Text 28
+    $bRn = New-Btn 'Rename' 0 0 90 26 'ghost'; $bRn.Tag = $t.id; $bRn.Add_Click({ param($s, $e) $tt = Get-Tile $s.Tag; if ($tt) { Rename-Tile $tt } }); Add-Side $bRn 30
     $mon = ($script:cfg.monitors | Where-Object { $_.id -eq $t.monitor } | Select-Object -First 1).name
     $areaTxt = ''
     $v = Get-ViewFor $t.monitor
@@ -469,8 +517,8 @@ function Update-Side {
     }
     if ($t.minW -or $t.minH) { $null = Add-SideLabel "Smallest size the app allows: $($t.minW) x $($t.minH) px" $script:fSmall $script:C.Muted 24 }
     if ($t.kind -ne 'league' -and $t.kind -ne 'ugg') {
-      $be = New-Btn 'On exit this app (click)' 0 0 310 38 'setting'; $be.Chip = $(if ($t.exit -eq 'close') { 'Closes' } else { 'Stays open' }); $be.Tag = $t.id
-      $be.Add_Click({ param($s, $e) $tt = Get-Tile $s.Tag; $tt.exit = $(if ($tt.exit -eq 'close') { 'leave' } else { 'close' }); $s.Chip = $(if ($tt.exit -eq 'close') { 'Closes' } else { 'Stays open' }); $s.Invalidate(); Set-Dirty })
+      $be = New-Btn 'On exit this app' 0 0 310 38 'setting'; $be.Seg = 'Stays open|Closes'; $be.On = ($t.exit -eq 'close'); $be.Tag = $t.id
+      $be.Add_Click({ param($s, $e) Save-UndoPoint; $tt = Get-Tile $s.Tag; $tt.exit = $(if ($tt.exit -eq 'close') { 'leave' } else { 'close' }); $s.On = ($tt.exit -eq 'close'); $s.Invalidate(); Set-Dirty })
       Add-Side $be 44
     }
     $bRm = New-Btn 'Remove from routine' 0 0 310 32 'ghost'; $bRm.Tag = $t.id
@@ -480,7 +528,7 @@ function Update-Side {
     $null = Add-SideLabel 'MISE POP-UP' $script:fTiny $script:C.Muted 20
     $null = Add-SideLabel 'The small progress pop-up shows here while the routine runs.' $script:fSmall $script:C.Muted 40
   } elseif (@(Get-Tiles).Count) {
-    $null = Add-SideLabel 'Click a tile to see its settings. Drag the line between two tiles to resize both.' $script:fSmall $script:C.Muted 44
+    $null = Add-SideLabel 'Click a tile to see its settings, right-click it to rename. Drag the line between two tiles to resize both.' $script:fSmall $script:C.Muted 44
   }
 
   # test run and check results
@@ -527,11 +575,8 @@ function Show-CaptureDialog {
   if (-not $items.Count) { $null = Show-MiseAsk 'Copy my screen' 'No open windows were found on your named screens. Open your apps, then try again.' 'OK' 'Close'; return }
   $W = 660; $M = 18; $cw = $W - 2 * $M
   $f = New-MiseDialog 'Copy my screen' $W 600
-  $f.Controls.Add((New-Label 'Tick the windows that belong to this routine. Click a button on the right to switch it.' $script:fSmall $script:C.Muted $M 54 360 20))
-  $f.Controls.Add((New-Label 'When you exit, every app:' $script:fSmall $script:C.Muted ($W - $M - 470) 54 170 20))
-  $bAllC = New-Btn 'Closes' ($W - $M - 290) 48 140 30; $bAllL = New-Btn 'Stays open' ($W - $M - 144) 48 140 30
-  $f.Controls.AddRange(@($bAllC, $bAllL))
-  $box = New-Object Windows.Forms.Panel; $box.Location = New-Object Drawing.Point($M, 88); $box.Width = $cw; $box.BackColor = $script:C.Bg; $box.AutoScroll = $true
+  $f.Controls.Add((New-Label 'Tick the windows that belong to this routine. On the right: what each one does when you exit the routine (click to switch).' $script:fSmall $script:C.Muted $M 52 ($W - 2 * $M) 34))
+  $box = New-Object Windows.Forms.Panel; $box.Location = New-Object Drawing.Point($M, 92); $box.Width = $cw; $box.BackColor = $script:C.Bg; $box.AutoScroll = $true
   $f.Controls.Add($box)
   $rows = @(); $y = 0
   foreach ($it in $items) {
@@ -539,9 +584,9 @@ function Show-CaptureDialog {
     $on = ($it.Kind -ne 'league') -or [bool]$script:R.league
     $chk = New-MiseCheck $(if ($isUgg) { 'u.gg (opens in champ select)' } elseif ($it.Kind -eq 'league') { 'League client (position only)' } elseif ($it.Kind -eq 'spotify' -and $it.Mini) { 'Spotify mini player' } else { $it.Name }) 0 ($y + 6) 330 $on
     $mn = ($script:cfg.monitors | Where-Object { $_.id -eq $it.Monitor } | Select-Object -First 1).name
-    $ml = New-Label $mn $script:fSmall $script:C.Muted 338 ($y + 8) 170 20
-    $ex = New-Btn $(if ($it.Kind -eq 'web' -and -not $isUgg) { 'Closes' } else { 'Stays open' }) ($cw - 130) ($y + 2) 120 30
-    $ex.Add_Click({ param($s, $e) $s.Text = $(if ($s.Text -eq 'Closes') { 'Stays open' } else { 'Closes' }); $s.Invalidate() })
+    $ml = New-Label $mn $script:fSmall $script:C.Muted 338 ($y + 8) 80 20
+    $ex = New-Btn '' ($cw - 204) ($y + 1) 180 32 'seg'; $ex.Seg = 'Stays open|Closes'; $ex.On = ($it.Kind -eq 'web' -and -not $isUgg)
+    $ex.Add_Click({ param($s, $e) $s.On = -not $s.On; $s.Invalidate() })
     if ($it.Kind -eq 'league' -or $isUgg) { $ex.Visible = $false }
     $box.Controls.AddRange(@($chk, $ml, $ex))
     $url = $null
@@ -555,8 +600,6 @@ function Show-CaptureDialog {
     $y += 42
   }
   $box.Height = [Math]::Min(420, $y + 4)
-  $bAllC.Add_Click({ foreach ($r in $rows) { if ($r.Exit.Visible) { $r.Exit.Text = 'Closes'; $r.Exit.Invalidate() } } })
-  $bAllL.Add_Click({ foreach ($r in $rows) { if ($r.Exit.Visible) { $r.Exit.Text = 'Stays open'; $r.Exit.Invalidate() } } })
   $by = $box.Bottom + 16
   $script:capMode = $null
   $hasTiles = (@(Get-Tiles).Count -gt 0)
@@ -575,7 +618,7 @@ function Show-CaptureDialog {
   $new = @()
   foreach ($r in $rows) {
     if (-not $r.Check.Checked) { continue }
-    $t = ConvertTo-Tile $r.Item $(if ($r.Exit.Text -eq 'Closes') { 'close' } else { 'leave' })
+    $t = ConvertTo-Tile $r.Item $(if ($r.Exit.On) { 'close' } else { 'leave' })
     if ($r.Url) { $t.url = $r.Url.Box.Text.Trim(); if ($t.url -like '*u.gg*') { $t.kind = 'ugg'; $t.name = 'u.gg (opens in champ select)' } }
     if ($t.kind -eq 'league') { $script:R.league = $true }
     $new += $t
