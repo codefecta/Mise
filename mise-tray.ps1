@@ -388,10 +388,10 @@ $updTimer.Add_Tick({
     # a downloaded update waits for a quiet moment: no League, no routine, no Mise window
     if (Test-Path (Get-UpdateReadyPath)) { if (Test-UpdateSafe) { if (Start-PendingUpdate) { $ni.Visible = $false; [Windows.Forms.Application]::Exit() } }; return }
     $last = "$(Get-MiseSetting $script:cfg 'lastUpdateCheck')"
-    $due = (-not $last) -or (((Get-Date) - [datetime]$last).TotalHours -ge 24)
+    $due = (-not $last) -or (((Get-Date) - [datetime]$last).TotalHours -ge 6)
     if ("$(Get-MiseSetting $script:cfg 'updateRepo')" -and $due) {
       $u = Test-MiseUpdate
-      if ($u.Available) { $script:update = $u; Save-MiseUpdate $u }
+      if ($u.Available) { $script:update = $u; try { Save-MiseUpdate $u; Remove-Item -LiteralPath (Join-Path $script:DataDir '_update-error.txt') -Force -ErrorAction SilentlyContinue } catch { try { Set-Content -LiteralPath (Join-Path $script:DataDir '_update-error.txt') -Value "$(Get-Date -Format s) $($_.Exception.Message)" -Encoding UTF8 } catch {} } }
     }
   } catch {}
 })

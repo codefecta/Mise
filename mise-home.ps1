@@ -184,17 +184,18 @@ $tip.SetToolTip($btnAcc, 'Accept the ready-check just before its timer ends')
 $tip.SetToolTip($btnQueue, 'Click to pick a lobby')
 
 # lobby picker: a short scroll list that drops down inside the window (mouse wheel scrolls), one choice
-$qList = New-Object Windows.Forms.Panel; $qList.BackColor = $script:C.Panel; $qList.Visible = $false
-$qInner = New-Object Windows.Forms.Panel; $qInner.BackColor = $script:C.Panel; $qList.Controls.Add($qInner)
-$qBar = New-Object Windows.Forms.Panel; $qBar.BackColor = $script:C.Accent; $qBar.Width = 3; $qList.Controls.Add($qBar)
-$qRow = 34; $qShow = 5; $script:qVis = 0
+$qList = New-Object Windows.Forms.Panel; $qList.BackColor = $script:C.Line; $qList.Visible = $false
+$qView = New-Object Windows.Forms.Panel; $qView.BackColor = $script:C.Bg; $qList.Controls.Add($qView)
+$qInner = New-Object Windows.Forms.Panel; $qInner.BackColor = $script:C.Bg; $qView.Controls.Add($qInner)
+$qBar = New-Object Windows.Forms.Panel; $qBar.BackColor = $script:C.Accent; $qBar.Width = 3; $qView.Controls.Add($qBar)
+$qRow = 32; $qShow = 5; $script:qVis = 0
 function Move-QueueList($dy) {
-  $max = [Math]::Max(0, $qInner.Height - $qList.Height)
+  $max = [Math]::Max(0, $qInner.Height - $qView.Height)
   $y = [Math]::Min(0, [Math]::Max(-$max, $qInner.Top + $dy)); $qInner.Top = $y
-  if ($max -gt 0) { $qBar.Visible = $true; $bh = [Math]::Max(24, [int]($qList.Height * $qList.Height / $qInner.Height)); $qBar.Height = $bh; $qBar.Top = [int]((-$y / $max) * ($qList.Height - $bh)) } else { $qBar.Visible = $false }
+  if ($max -gt 0) { $qBar.Visible = $true; $bh = [Math]::Max(24, [int]($qView.Height * $qView.Height / $qInner.Height)); $qBar.Height = $bh; $qBar.Top = [int]((-$y / $max) * ($qView.Height - $bh)); $qBar.BringToFront() } else { $qBar.Visible = $false }
 }
 $qGrow = New-Object Windows.Forms.Timer; $qGrow.Interval = 15
-$qGrow.Add_Tick({ $d = $script:qVis - $qList.Height; if ($d -le 2) { $qList.Height = $script:qVis; $qGrow.Stop(); Move-QueueList 0 } else { $qList.Height = $qList.Height + [int][Math]::Ceiling($d * 0.3) } })
+$qGrow.Add_Tick({ $d = $script:qVis - $qList.Height; if ($d -le 2) { $qList.Height = $script:qVis; $qView.Height = $script:qVis - 2; $qGrow.Stop(); Move-QueueList 0 } else { $qList.Height = $qList.Height + [int][Math]::Ceiling($d * 0.3); $qView.Height = $qList.Height - 2 } })
 function Hide-QueueList { $qGrow.Stop(); $qList.Visible = $false }
 function Show-QueueList {
   if ($qList.Visible) { Hide-QueueList; return }
@@ -202,19 +203,32 @@ function Show-QueueList {
   $routesNo = @(); try { $rf = Join-Path $store '_routes.json'; if (Test-Path $rf) { $routesNo = @((Get-Content -LiteralPath $rf -Raw | ConvertFrom-Json).no | ForEach-Object { [int]$_ }) } } catch {}
   $cw = $btnQueue.Width; $qInner.Controls.Clear(); $y = 0
   foreach ($qq in $script:QueueList) {
-    $r = New-Btn $qq.Name 0 $y ($cw - 6) $qRow 'row'; $r.BackColor = $script:C.Panel; $r.Surface = $script:C.Panel
-    $r.Tag = $qq.Id; $r.On = ($qq.Id -eq $cur)
-    if ($routesNo -contains $qq.Id) { $r.Sub = 'not available' }
-    $r.Add_Click({ param($s, $e) $script:cfg = Set-MiseSetting 'queue' ([int]$s.Tag); Show-Opts; Hide-QueueList })
+    $r = New-Object Windows.Forms.Label; $r.SetBounds(0, $y, ($cw - 2), $qRow); $r.BackColor = $script:C.Bg; $r.Cursor = [Windows.Forms.Cursors]::Hand
+    $r.Tag = @{ Id = $qq.Id; Name = "$($qq.Name)"; On = ($qq.Id -eq $cur); No = ($routesNo -contains $qq.Id); Hot = $false }
+    $r.Add_MouseEnter({ param($s, $e) $s.Tag.Hot = $true; $s.Invalidate() })
+    $r.Add_MouseLeave({ param($s, $e) $s.Tag.Hot = $false; $s.Invalidate() })
+    $r.Add_Paint({ param($s, $e)
+      $g = $e.Graphics; $t = $s.Tag; $g.TextRenderingHint = 'ClearTypeGridFit'
+      if ($t.Hot) { $br = New-Object Drawing.SolidBrush($script:C.Hover); $g.FillRectangle($br, 0, 0, $s.Width, $s.Height); $br.Dispose() }
+      $sf = New-Object Drawing.StringFormat; $sf.LineAlignment = 'Center'; $sf.Trimming = 'EllipsisCharacter'; $sf.FormatFlags = 'NoWrap'
+      $col = $(if ($t.On) { $script:C.Accent } else { $script:C.Text })
+      $br = New-Object Drawing.SolidBrush($col)
+      $g.DrawString($t.Name, $script:fBtn, $br, (New-Object Drawing.RectangleF(14, 0, ($s.Width - 100), $s.Height)), $sf); $br.Dispose()
+      $rf = New-Object Drawing.StringFormat; $rf.LineAlignment = 'Center'; $rf.Alignment = 'Far'
+      if ($t.No) { $mb = New-Object Drawing.SolidBrush($script:C.Muted); $g.DrawString('not available', $script:fSmall, $mb, (New-Object Drawing.RectangleF(($s.Width - 130), 0, 118, $s.Height)), $rf); $mb.Dispose() }
+      elseif ($t.On) { $ab = New-Object Drawing.SolidBrush($script:C.Accent); $g.DrawString([string][char]0x2713, $script:fBtn, $ab, (New-Object Drawing.RectangleF(($s.Width - 40), 0, 28, $s.Height)), $rf); $ab.Dispose() }
+      $sf.Dispose(); $rf.Dispose() })
+    $r.Add_Click({ param($s, $e) $script:cfg = Set-MiseSetting 'queue' ([int]$s.Tag.Id); Show-Opts; Hide-QueueList })
     $r.Add_MouseWheel({ param($s, $e) Move-QueueList ([int]($e.Delta / 120) * $qRow) })
     $qInner.Controls.Add($r); $y += $qRow
   }
-  $qInner.Size = New-Object Drawing.Size($cw, $y); $qInner.Top = 0
-  $script:qVis = [Math]::Min($script:QueueList.Count, $qShow) * $qRow
-  $top = $btnQueue.Bottom + 4
-  if ($top + $script:qVis -gt $form.ClientSize.Height - 6) { $top = $btnQueue.Top - $script:qVis - 4 }
-  $qBar.Left = $cw - 4
-  $qList.Bounds = New-Object Drawing.Rectangle($btnQueue.Left, $top, $cw, $(if ($script:Animate) { 4 } else { $script:qVis }))
+  $qInner.Size = New-Object Drawing.Size(($cw - 2), $y); $qInner.Top = 0
+  $script:qVis = [Math]::Min($script:QueueList.Count, $qShow) * $qRow + 2
+  $top = $btnQueue.Bottom + 2
+  if ($top + $script:qVis -gt $form.ClientSize.Height - 6) { $top = $btnQueue.Top - $script:qVis - 2 }
+  $hh = $(if ($script:Animate) { 6 } else { $script:qVis })
+  $qList.Bounds = New-Object Drawing.Rectangle($btnQueue.Left, $top, $cw, $hh)
+  $qView.SetBounds(1, 1, ($cw - 2), ($hh - 2)); $qBar.Left = $cw - 7
   $qList.BringToFront(); $qList.Visible = $true
   for ($i = 0; $i -lt $script:QueueList.Count; $i++) { if ($script:QueueList[$i].Id -eq $cur) { Move-QueueList (-([Math]::Max(0, $i - 2) * $qRow)); break } }
   if ($script:Animate) { $qGrow.Start() } else { Move-QueueList 0 }

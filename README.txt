@@ -1,4 +1,4 @@
-﻿Mise (shared edition) 0.6.3 - everything in its place before you play
+﻿Mise (shared edition) 0.6.4 - everything in its place before you play
 (mise = short for 'mise en place', a chef's habit: everything in its place before service starts.)
 
 INSTALL
@@ -60,7 +60,7 @@ LEAGUE
 - If a saved login is rejected, Mise stops: log in by hand, then the account's ... > Update saved login.
 
 UPDATES
-Mise checks GitHub (codefecta/Mise) once a day and offers the update in the tray. Settings > Check for updates checks right now.
+Mise checks GitHub (codefecta/Mise) every few hours and installs the update quietly when nothing is running. Settings > Check for updates checks right now.
 
 Your routines and settings live in %APPDATA%\Mise\config.json and are kept when you update or uninstall.
 UNINSTALL.cmd removes Mise (not your routines or saved logins).

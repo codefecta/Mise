@@ -1,6 +1,6 @@
 ﻿# Mise (shared edition) - core library. Dot-sourced by the runner, the tray and the builder.
 # Everything the routines can do lives here, driven by a JSON config:  %APPDATA%\Mise\config.json
-$script:MiseVersion = '0.6.3'
+$script:MiseVersion = '0.6.4'
 # feedback goes to a Google Form (no account needed); filled in when the form exists ('' = keep entries in a local queue)
 $script:FeedbackForm = ''
 $script:FeedbackFields = @{ type = ''; message = ''; name = ''; info = '' }
