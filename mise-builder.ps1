@@ -1,5 +1,5 @@
 ﻿<# Mise builder: one window for new and existing routines.
-   Copy my screen (or + Add app) puts tiles on a map of your screens; fine-tune them there; Save.
+   Copy my screen (or + Add app or page) puts tiles on a map of your screens; fine-tune them there; Save.
    mise-builder.ps1 [-New] [-Routine <id>] #>
 param([switch]$New, [string]$Routine = '')
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'mise-ui.ps1')
@@ -46,10 +46,11 @@ function Show-MiseAsk([string]$title, [string]$text, [string]$yes, [string]$no) 
   $W = 380; $M = 18
   $f = New-MiseDialog $title $W 190
   $f.Controls.Add((New-Label $text $script:fSmall $script:C.Text $M 54 ($W - 2 * $M) 60))
-  $by = New-Btn $yes ($W - $M - 130) 126 130 34 'primary'; $bn = New-Btn $no ($W - $M - 270) 126 130 34
+  $by = New-Btn $yes ($W - $M - 130) 126 130 34 'primary'
   $script:askAnswer = $null
-  $by.Add_Click({ param($s, $e) $script:askAnswer = 'yes'; $s.FindForm().Close() }); $bn.Add_Click({ param($s, $e) $script:askAnswer = 'no'; $s.FindForm().Close() })
-  $f.Controls.AddRange(@($by, $bn)); $f.ClientSize = New-Object Drawing.Size($W, 176)
+  $by.Add_Click({ param($s, $e) $script:askAnswer = 'yes'; $s.FindForm().Close() }); $f.Controls.Add($by)
+  if ($no) { $bn = New-Btn $no ($W - $M - 270) 126 130 34; $bn.Add_Click({ param($s, $e) $script:askAnswer = 'no'; $s.FindForm().Close() }); $f.Controls.Add($bn) }
+  $f.ClientSize = New-Object Drawing.Size($W, 176)
   $owners = @([Windows.Forms.Application]::OpenForms | Where-Object { $_.Visible -and $_.TopMost -and $_ -ne $f }); foreach ($o in $owners) { $o.TopMost = $false }
   [void]$f.ShowDialog()
   foreach ($o in $owners) { try { $o.TopMost = $true } catch {} }
@@ -82,27 +83,27 @@ $tip = New-Object Windows.Forms.ToolTip
 # header
 $logo = New-Logo 18 16; $form.Controls.Add($logo)
 $hdr = New-Label 'Routines' $script:fTitle $script:C.Accent 58 12 150 34; $form.Controls.Add($hdr)
-$nameBox = New-MiseText 220 18 260; $form.Controls.Add($nameBox.Panel)
+$lblName = New-Label 'Name' $script:fSmall $script:C.Muted 220 26 44 18; $form.Controls.Add($lblName)
+$nameBox = New-MiseText 266 18 240; $form.Controls.Add($nameBox.Panel)
 $nameBox.Box.Add_TextChanged({ if ($script:R -and $nameBox.Box.Text -ne $script:R.name) { $script:R.name = $nameBox.Box.Text; $script:dirty = $true; Update-List } })
 $bCopy = New-Btn 'Copy my screen' 0 16 150 34 'primary'
-$bAdd = New-Btn '+ Add app' 0 16 110 34
+$bAdd = New-Btn '+ Add app or page' 0 16 150 34
 $bUndo = New-Btn 'Undo' 0 16 80 34
-$bPrev = New-Btn 'Preview on screen' 0 16 160 34
 $bTest = New-Btn 'Test run' 0 16 100 34
-$bSave = New-Btn 'Save' 0 16 90 34 'primary'
-$form.Controls.AddRange(@($bCopy, $bAdd, $bUndo, $bPrev, $bTest, $bSave))
+$bSave = New-Btn 'Save' 0 16 80 34 'primary'
+$bSaveC = New-Btn 'Save and close' 0 16 130 34
+$form.Controls.AddRange(@($bCopy, $bAdd, $bUndo, $bTest, $bSave, $bSaveC))
 $tip.SetToolTip($bCopy, 'Put your apps roughly in place first. Mise lists the open windows; tick the ones for this routine.')
 $tip.SetToolTip($bUndo, 'Undo the last change on the map (Ctrl+Z)')
-$tip.SetToolTip($bPrev, 'Move your open windows to this layout once, so you see the real result')
 $tip.SetToolTip($bTest, 'Run the routine now (League with the current login) and mark each tile passed or failed')
 
 # left: routines
 $lblR = New-Label 'ROUTINES' $script:fTiny $script:C.Muted 18 76 200 14; $form.Controls.Add($lblR)
 $listPanel = New-Object Windows.Forms.Panel; $listPanel.BackColor = $script:C.Bg; $listPanel.Location = New-Object Drawing.Point(18, 96); $listPanel.AutoScroll = $true
 $form.Controls.Add($listPanel)
-$bNewR = New-Btn '+ New routine' 18 0 200 34; $bDelR = New-Btn 'Delete routine' 18 0 200 30 'ghost'
+$bNewR = New-Btn '+ New routine' 18 0 200 34
 $bHome = New-Btn 'Back to Mise' 18 0 200 30 'ghost'
-$form.Controls.AddRange(@($bNewR, $bDelR, $bHome))
+$form.Controls.AddRange(@($bNewR, $bHome))
 
 # centre: the map
 $canvas = New-Object Windows.Forms.Panel; $canvas.BackColor = [Drawing.Color]::FromArgb(18, 18, 21)
@@ -117,9 +118,9 @@ function Do-Layout {
   $script:lives = @(Get-LiveMonitors $script:cfg)   # screens are read once per layout, not on every repaint
   $W = $form.ClientSize.Width; $H = $form.ClientSize.Height
   $x = $W - 18
-  foreach ($b in @($bSave, $bTest, $bPrev, $bUndo, $bAdd, $bCopy)) { $x -= $b.Width; $b.Left = $x; $x -= 8 }
-  $listPanel.Size = New-Object Drawing.Size(212, ($H - 96 - 130))
-  $bNewR.Top = $H - 126; $bDelR.Top = $H - 86; $bHome.Top = $H - 50
+  foreach ($b in @($bSaveC, $bSave, $bTest, $bUndo, $bAdd, $bCopy)) { $x -= $b.Width; $b.Left = $x; $x -= 8 }
+  $listPanel.Size = New-Object Drawing.Size(212, ($H - 96 - 94))
+  $bNewR.Top = $H - 88; $bHome.Top = $H - 50
   $canvas.Bounds = New-Object Drawing.Rectangle(238, 76, ($W - 238 - 360), ($H - 76 - 18))
   $side.Bounds = New-Object Drawing.Rectangle(($W - 344), 76, 330, ($H - 76 - 18))
   $canvas.Invalidate()
@@ -134,19 +135,20 @@ function Update-List {
   foreach ($r in $all) {
     $i++
     $nm = if ($script:R -and $r.id -eq $script:R.id) { $script:R.name } else { $r.name }
-    $b = New-Btn $nm 0 $y 196 40 'row'; $b.Num = "$i"; $b.Tag = $r.id; $b.Chip = $(if ($r.league) { 'LoL' } else { '' })
+    $b = New-Btn $nm 0 $y 196 40 'row'; $b.Dots = $true; $b.Tag = $r.id; $b.Chip = $(if ($r.league) { 'LoL' } else { '' })
     $b.On = ($script:R -and $r.id -eq $script:R.id)
-    $b.Add_Click({ param($s, $e) Open-Routine $s.Tag })
+    $b.Add_Click({ param($s, $e) if ($s.DotsHit($s.PointToClient([Windows.Forms.Cursor]::Position).X)) { Show-RoutineMenu $s.Tag $s } else { Open-Routine $s.Tag } })
     $b.Add_MouseUp({ param($s, $e) if ($e.Button -eq 'Right') { Show-RoutineMenu $s.Tag $s } })
     $listPanel.Controls.Add($b); $y += 46
   }
 }
-# right-click a routine in the list: duplicate it
+# right-click a routine in the list (or its ...): duplicate or delete it
 function Show-RoutineMenu([string]$id, $ctl) {
   $m = New-Object Windows.Forms.ContextMenuStrip
   $m.BackColor = $script:C.Panel; $m.ForeColor = $script:C.Text; $m.ShowImageMargin = $false
-  $iD = $m.Items.Add('Duplicate'); $iD.Tag = $id; $iD.Add_Click({ param($s, $e) Copy-RoutineEntry $s.Tag })
-  $m.Show($ctl, (New-Object Drawing.Point(20, $ctl.Height - 6)))
+  $miDup = $m.Items.Add('Duplicate'); $miDup.Tag = $id; $miDup.Add_Click({ param($s, $e) Copy-RoutineEntry $s.Tag })
+  $miDel = $m.Items.Add('Delete'); $miDel.Tag = $id; $miDel.Add_Click({ param($s, $e) Remove-RoutineEntry $s.Tag })
+  $m.Show($ctl, (New-Object Drawing.Point(($ctl.Width - 36), $ctl.Height)))
 }
 function Copy-RoutineEntry([string]$id) {
   if (-not (Confirm-Leave)) { return }
@@ -230,6 +232,15 @@ function Get-Hit($pt) {
   $v = Get-ViewAt $pt; if (-not $v) { return @{ Kind = 'none' } }
   if ($script:R.card -and $script:R.card.monitor -eq $v.Live.id) { $cb = Get-TileBox $v (Get-CardRect $v); if ($cb.Contains([single]$pt.X, [single]$pt.Y)) { return @{ Kind = 'card'; V = $v } } }
   $mine = @(Get-Tiles | Where-Object { $_.monitor -eq $v.Live.id -and $_.kind -ne 'league' })
+  # corners first (drag a corner to resize width and height at once); the top-most tile wins
+  $rev = @($mine); [array]::Reverse($rev)
+  foreach ($t in $rev) {
+    $b = Get-TileBox $v $t.rect
+    $c = [Math]::Min(10.0, [Math]::Min($b.Width, $b.Height) / 3.0)
+    $nl = [Math]::Abs($pt.X - $b.Left) -le $c; $nr = [Math]::Abs($pt.X - $b.Right) -le $c
+    $nt = [Math]::Abs($pt.Y - $b.Top) -le $c; $nb = [Math]::Abs($pt.Y - $b.Bottom) -le $c
+    if (($nl -or $nr) -and ($nt -or $nb)) { return @{ Kind = 'edge'; Edge = "$(if ($nt) { 't' } else { 'b' })$(if ($nl) { 'l' } else { 'r' })"; Tile = $t; V = $v } }
+  }
   foreach ($ed in @(Get-SharedEdges $mine 0.004)) {
     $ids = @($ed.before) + @($ed.after); $span = @($mine | Where-Object { $ids -contains $_.id })
     if ($ed.axis -eq 'x') {
@@ -261,13 +272,14 @@ $script:KindColors = @{
   app = @([Drawing.Color]::FromArgb(51, 48, 74), [Drawing.Color]::FromArgb(140, 134, 200)); web = @([Drawing.Color]::FromArgb(43, 58, 74), [Drawing.Color]::FromArgb(110, 143, 176))
   ugg = @([Drawing.Color]::FromArgb(43, 58, 74), [Drawing.Color]::FromArgb(110, 143, 176)); spotify = @([Drawing.Color]::FromArgb(36, 64, 47), [Drawing.Color]::FromArgb(111, 174, 134))
   league = @([Drawing.Color]::FromArgb(58, 44, 34), [Drawing.Color]::FromArgb(200, 134, 90))
+  stream = @([Drawing.Color]::FromArgb(44, 46, 78), [Drawing.Color]::FromArgb(120, 130, 230))
 }
 $canvas.Add_Paint({
   param($s, $e)
   $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'; $g.TextRenderingHint = 'ClearTypeGridFit'
   $script:view = @(Get-View)
   $muted = New-Object Drawing.SolidBrush($script:C.Muted); $text = New-Object Drawing.SolidBrush($script:C.Text); $acc = New-Object Drawing.SolidBrush($script:C.Accent)
-  if (-not $script:view.Count) { $g.DrawString('No named screens are connected. Name your screens in Mise settings.', $script:fSmall, $muted, 24, 24); return }
+  if (-not $script:view.Count) { $g.DrawString('No named screens are connected. Use Name screens in Mise settings (gear).', $script:fSmall, $muted, 24, 24); return }
   foreach ($v in $script:view) {
     # screen, its header (name, taskbar, layout) and the work area
     $hy = $v.Mon.Y - $script:hdrH + 2
@@ -277,10 +289,10 @@ $canvas.Add_Paint({
     $tbText = $(if ($tbHidden) { 'Taskbar: hidden' } else { 'Taskbar: shown' }); $tbBrush = $(if ($tbHidden) { $acc } else { $muted })
     $pill = New-Object Drawing.Pen([Drawing.Color]::FromArgb(110, 108, 100), 1)
     if ($v.Mon.Width -ge 200) {
-      $g.DrawRectangle($pill, ($v.Mon.Right - 190), ($hy + $rowH), 120, 18); $g.DrawString($tbText + ' ' + [char]0x25BE, $script:fSmall, $(if ($tbHidden) { $acc } else { $text }), ($v.Mon.Right - 187), ($hy + $rowH + 1))
+      $g.DrawRectangle($pill, ($v.Mon.Right - 190), ($hy + $rowH), 120, 18); $g.DrawString($tbText, $script:fSmall, $(if ($tbHidden) { $acc } else { $text }), ($v.Mon.Right - 187), ($hy + $rowH + 1))
       $g.DrawRectangle($pill, ($v.Mon.Right - 66), ($hy + $rowH), 64, 18); $g.DrawString('Layout ' + [char]0x25BE, $script:fSmall, $text, ($v.Mon.Right - 63), ($hy + $rowH + 1))
     } else {
-      $g.DrawRectangle($pill, $v.Mon.X, ($hy + $rowH), ($v.Mon.Width - 1), 17); $g.DrawString($tbText + ' ' + [char]0x25BE, $script:fSmall, $(if ($tbHidden) { $acc } else { $text }), ($v.Mon.X + 3), ($hy + $rowH))
+      $g.DrawRectangle($pill, $v.Mon.X, ($hy + $rowH), ($v.Mon.Width - 1), 17); $g.DrawString($tbText, $script:fSmall, $(if ($tbHidden) { $acc } else { $text }), ($v.Mon.X + 3), ($hy + $rowH))
       $g.DrawRectangle($pill, $v.Mon.X, ($hy + 2 * $rowH), ($v.Mon.Width - 1), 17); $g.DrawString('Layout ' + [char]0x25BE, $script:fSmall, $text, ($v.Mon.X + 3), ($hy + 2 * $rowH))
     }
     $pill.Dispose()
@@ -324,8 +336,7 @@ $canvas.Add_Paint({
     $bp = New-Object Drawing.Pen($script:C.Accent, 1.5); $g.DrawRectangle($bp, $box.X, $box.Y, $box.Width, $box.Height); $bp.Dispose()
     $g.DrawString('Start here', $script:fBig, $acc, ($box.X + 16), ($box.Y + 12))
     $g.DrawString("1. Open your apps and put them roughly in place.`n2. Press Copy my screen.`n3. Fine-tune here on the map.", $script:fSmall, $text, (New-Object Drawing.RectangleF(($box.X + 16), ($box.Y + 44), ($box.Width - 32), 90)))
-  } elseif ($script:helper) { $g.DrawString($script:helper, $script:fSmall, $acc, 12, ($canvas.ClientSize.Height - 26)) } else { $g.DrawString('Right-click a tile for rename and more. Ctrl+Z undoes, Delete removes the selected tile.', $script:fSmall, $muted, 12, ($canvas.ClientSize.Height - 26)) }
-  $g.DrawString('Ctrl+Z undo', $script:fTiny, $muted, ($canvas.ClientSize.Width - 80), 6)
+  } elseif ($script:helper) { $g.DrawString($script:helper, $script:fSmall, $acc, 12, ($canvas.ClientSize.Height - 26)) } else { $g.DrawString('Drag an edge or a corner to resize. Right-click a tile for rename and more. Delete removes the selected tile.', $script:fSmall, $muted, 12, ($canvas.ClientSize.Height - 26)) }
   $muted.Dispose(); $text.Dispose(); $acc.Dispose()
 })
 
@@ -333,7 +344,7 @@ $canvas.Add_Paint({
 function Set-CursorFor($hit) {
   $cur = switch ($hit.Kind) {
     'grip' { if ($hit.Edge.axis -eq 'x') { 'SizeWE' } else { 'SizeNS' } }
-    'edge' { if ($hit.Edge -eq 'l' -or $hit.Edge -eq 'r') { 'SizeWE' } else { 'SizeNS' } }
+    'edge' { switch ($hit.Edge) { 'l' { 'SizeWE' } 'r' { 'SizeWE' } 't' { 'SizeNS' } 'b' { 'SizeNS' } 'tl' { 'SizeNWSE' } 'br' { 'SizeNWSE' } default { 'SizeNESW' } } }
     'tile' { 'SizeAll' }
     'card' { 'SizeAll' }
     'taskbar' { 'Hand' }
@@ -376,12 +387,16 @@ $canvas.Add_MouseMove({
       Move-SharedEdge $d.Hit.Mine $ed $val $v.Area | Out-Null
     }
     'edge' {
-      $v = $d.Hit.V; $t = $d.Hit.Tile; $axis = if ($d.Hit.Edge -in 'l', 'r') { 'x' } else { 'y' }
+      # one edge (l, r, t, b) or a corner (tl, tr, bl, br = both edges at once); each edge snaps to the others' edges
+      $v = $d.Hit.V; $t = $d.Hit.Tile
       $others = @(Get-Tiles | Where-Object { $_.monitor -eq $v.Live.id })
-      $val = if ($axis -eq 'x') { ($e.X - $v.A.X) / $v.A.Width } else { ($e.Y - $v.A.Y) / $v.A.Height }
-      $tol = if ($axis -eq 'x') { 10 / $v.A.Width } else { 10 / $v.A.Height }
       $mf = Get-MinFrac $t $v.Area
-      $t.rect = Get-ResizedRect $t.rect $d.Hit.Edge $val (Get-Guides $others $axis $t.id) $tol $mf.w $mf.h
+      foreach ($ch in @(([string]$d.Hit.Edge).ToCharArray())) {
+        $edg = [string]$ch; $axis = if ($edg -in 'l', 'r') { 'x' } else { 'y' }
+        $val = if ($axis -eq 'x') { ($e.X - $v.A.X) / $v.A.Width } else { ($e.Y - $v.A.Y) / $v.A.Height }
+        $tol = if ($axis -eq 'x') { 10 / $v.A.Width } else { 10 / $v.A.Height }
+        $t.rect = Get-ResizedRect $t.rect $edg $val (Get-Guides $others $axis $t.id) $tol $mf.w $mf.h
+      }
     }
     'move' {
       $t = $d.Hit.Tile
@@ -422,13 +437,9 @@ function Show-TileMenu($t, $pt) {
   $m.BackColor = $script:C.Panel; $m.ForeColor = $script:C.Text; $m.ShowImageMargin = $false
   $iR = $m.Items.Add('Rename...'); $iR.Tag = $t.id; $iR.Add_Click({ param($s, $e) $tt = Get-Tile $s.Tag; if ($tt) { Rename-Tile $tt } })
   if ($t.kind -ne 'league' -and $t.kind -ne 'ugg') {
-    $iE = $m.Items.Add($(if ($t.exit -eq 'close') { 'On exit: Closes (click for Stays open)' } else { 'On exit: Stays open (click for Closes)' })); $iE.Tag = $t.id
+    $iE = $m.Items.Add($(if ($t.exit -eq 'close') { 'When the routine exits: Closes (click for Stays open)' } else { 'When the routine exits: Stays open (click for Closes)' })); $iE.Tag = $t.id
     $iE.Add_Click({ param($s, $e) Save-UndoPoint; $tt = Get-Tile $s.Tag; $tt.exit = $(if ($tt.exit -eq 'close') { 'leave' } else { 'close' }); Set-Dirty; Update-Side; $canvas.Invalidate() })
   }
-  $iF = $m.Items.Add('Bring to front'); $iF.Tag = $t.id
-  $iF.Add_Click({ param($s, $e) Save-UndoPoint; $tt = Get-Tile $s.Tag; $script:R.tiles = @(@(Get-Tiles | Where-Object { $_.id -ne $s.Tag }) + $tt); Set-Dirty; $canvas.Invalidate() })
-  $iB = $m.Items.Add('Send to back'); $iB.Tag = $t.id
-  $iB.Add_Click({ param($s, $e) Save-UndoPoint; $tt = Get-Tile $s.Tag; $script:R.tiles = @(@($tt) + @(Get-Tiles | Where-Object { $_.id -ne $s.Tag })); Set-Dirty; $canvas.Invalidate() })
   [void]$m.Items.Add('-')
   $iX = $m.Items.Add('Remove from routine'); $iX.Tag = $t.id
   $iX.Add_Click({ param($s, $e) Save-UndoPoint; $script:R.tiles = @(Get-Tiles | Where-Object { $_.id -ne $s.Tag }); $script:sel = ''; Set-Dirty; Update-Side; $canvas.Invalidate() })
@@ -460,16 +471,17 @@ function Update-Side {
   $bK = New-Btn 'Hotkey' 0 0 310 38 'setting'; $bK.Chip = $(if ($script:hkCapture) { 'press keys...' } elseif ($script:R.hotkey) { $script:R.hotkey } else { 'none' })
   $bK.Add_Click({ $script:hkCapture = $true; Update-Side })
   Add-Side $bK 44
-  if ($script:hkMsg) { $null = Add-SideLabel $script:hkMsg $script:fSmall $script:C.Muted 40 }
-  $bCard = New-Btn $(if ($script:R.card) { 'Mise pop-up: placed on the map' } else { 'Mise pop-up: place it on the map' }) 0 0 310 34
+  if ($script:hkCapture) { $null = Add-SideLabel 'Press the keys now. Backspace clears, Esc cancels.' $script:fSmall $script:C.Muted 40 }
+  elseif ($script:hkMsg) { $null = Add-SideLabel $script:hkMsg $script:fSmall $script:C.Muted 40 }
+  $bCard = New-Btn 'Pop-up spot on the map' 0 0 310 38 'setting'; $bCard.IsSwitch = $true; $bCard.On = [bool]$script:R.card
   $bCard.Add_Click({
     Save-UndoPoint
     if ($script:R.card) { $script:R.card = $null; if ($script:sel -eq 'card') { $script:sel = '' } }
     else { $v = $script:view | Where-Object { $_.Live.Primary } | Select-Object -First 1; if (-not $v) { $v = $script:view[0] }; if ($v) { $script:R.card = [pscustomobject]@{ monitor = $v.Live.id; rect = @{ x = 16.0 / $v.Area.W; y = 16.0 / $v.Area.H; w = 320.0 / $v.Area.W; h = 96.0 / $v.Area.H } }; $script:sel = 'card' } }
     Set-Dirty; Update-Side; $canvas.Invalidate()
   })
-  $tip.SetToolTip($bCard, 'Where the small progress pop-up shows while this routine runs. Click again to remove it.')
-  Add-Side $bCard 46
+  $tip.SetToolTip($bCard, 'On: a small tile on the map marks where the progress pop-up shows while this routine runs. Off: the corner from Settings.')
+  Add-Side $bCard 44
 
   # the selected tile
   $t = if ($script:sel -and $script:sel -ne 'card') { Get-Tile $script:sel } else { $null }
@@ -510,14 +522,21 @@ function Update-Side {
           } catch { Write-Log "mini toggle failed: $($_.Exception.Message)" }
           $s.Invalidate(); Set-Dirty; Update-Side; $canvas.Invalidate() })
         Add-Side $bm 44
-        $null = Add-SideLabel 'Turning it on shrinks the tile to the mini player. Test run opens it; Preview only moves windows that are already open.' $script:fSmall $script:C.Muted 54
+        $null = Add-SideLabel 'Turning it on shrinks the tile to the mini player. Test run opens it.' $script:fSmall $script:C.Muted 40
+      }
+      'stream' {
+        $null = Add-SideLabel "Friend's Discord display name" $script:fSmall $script:C.Muted 20
+        $sb = New-MiseText 0 0 310 "$($t.streamer)"; $sb.Box.Tag = $t.id
+        $sb.Box.Add_TextChanged({ param($s, $e) $tt = Get-Tile $s.Tag; if ($tt -and "$($tt.streamer)" -ne $s.Text.Trim()) { $tt | Add-Member -NotePropertyName streamer -NotePropertyValue $s.Text.Trim() -Force; Set-Dirty } })
+        Add-Side $sb.Panel 38
+        $null = Add-SideLabel 'While this routine runs and League is open, Mise watches Discord. When this friend streams in your voice channel, it opens the stream, pops it out and puts it here. Be in the voice channel with Discord open.' $script:fSmall $script:C.Muted 72
       }
       'league' { $null = Add-SideLabel 'The League client keeps the size set in League. Drag it to choose where it opens.' $script:fSmall $script:C.Muted 40 }
       default { $null = Add-SideLabel $(if ($t.exe) { $t.exe } elseif ($t.appid) { $t.appid } else { 'Learned on the first run' }) $script:fSmall $script:C.Muted 36 }
     }
     if ($t.minW -or $t.minH) { $null = Add-SideLabel "Smallest size the app allows: $($t.minW) x $($t.minH) px" $script:fSmall $script:C.Muted 24 }
     if ($t.kind -ne 'league' -and $t.kind -ne 'ugg') {
-      $be = New-Btn 'On exit this app' 0 0 310 38 'setting'; $be.Seg = 'Stays open|Closes'; $be.On = ($t.exit -eq 'close'); $be.Tag = $t.id
+      $be = New-Btn 'When the routine exits' 0 0 310 38 'setting'; $be.Seg = 'Stays open|Closes'; $be.On = ($t.exit -eq 'close'); $be.Tag = $t.id
       $be.Add_Click({ param($s, $e) Save-UndoPoint; $tt = Get-Tile $s.Tag; $tt.exit = $(if ($tt.exit -eq 'close') { 'leave' } else { 'close' }); $s.On = ($tt.exit -eq 'close'); $s.Invalidate(); Set-Dirty })
       Add-Side $be 44
     }
@@ -572,7 +591,7 @@ $form.Add_KeyDown({
 # ======================= Copy my screen =======================
 function Show-CaptureDialog {
   $items = @(Get-CaptureList $script:cfg)
-  if (-not $items.Count) { $null = Show-MiseAsk 'Copy my screen' 'No open windows were found on your named screens. Open your apps, then try again.' 'OK' 'Close'; return }
+  if (-not $items.Count) { $null = Show-MiseAsk 'Copy my screen' 'No open windows were found on your named screens. Open your apps, then try again.' 'OK' ''; return }
   $W = 660; $M = 18; $cw = $W - 2 * $M
   $f = New-MiseDialog 'Copy my screen' $W 600
   $f.Controls.Add((New-Label 'Tick the windows that belong to this routine. On the right: what each one does when you exit the routine (click to switch).' $script:fSmall $script:C.Muted $M 52 ($W - 2 * $M) 34))
@@ -634,7 +653,7 @@ function Show-CaptureDialog {
   Set-Dirty; Update-Side; $canvas.Invalidate()
 }
 
-# ======================= + Add app =======================
+# ======================= + Add app or page =======================
 function Add-TileFor($tile) {
   $v = $script:view | Where-Object { $_.Live.Primary } | Select-Object -First 1; if (-not $v) { $v = $script:view[0] }; if (-not $v) { return }
   $tile.monitor = $v.Live.id
@@ -649,13 +668,13 @@ function Add-TileFor($tile) {
 }
 function Show-AddDialog {
   $W = 460; $M = 18; $cw = $W - 2 * $M
-  $f = New-MiseDialog 'Add app' $W 560
+  $f = New-MiseDialog '+ Add app or page' $W 560
   $q = New-MiseText $M 54 $cw ''; $f.Controls.Add($q.Panel)
   $lst = New-Object Windows.Forms.ListBox; $lst.Location = New-Object Drawing.Point($M, 96); $lst.Size = New-Object Drawing.Size($cw, 380)
   $lst.BackColor = $script:C.Panel; $lst.ForeColor = $script:C.Text; $lst.BorderStyle = 'None'; $lst.Font = $script:fStatus; $lst.IntegralHeight = $false
   $f.Controls.Add($lst)
   $script:addApps = @(Get-InstalledApps)
-  $fill = { $lst.Items.Clear(); [void]$lst.Items.Add('Web page'); foreach ($a in $script:addApps) { if (-not $q.Box.Text -or $a.Name -like "*$($q.Box.Text)*") { [void]$lst.Items.Add($a.Name) } } }
+  $fill = { $lst.Items.Clear(); [void]$lst.Items.Add('Web page'); [void]$lst.Items.Add("A friend's Discord stream"); foreach ($a in $script:addApps) { if (-not $q.Box.Text -or $a.Name -like "*$($q.Box.Text)*") { [void]$lst.Items.Add($a.Name) } } }
   & $fill
   $q.Box.Add_TextChanged({ & $fill })
   $script:addPick = $null
@@ -667,6 +686,13 @@ function Show-AddDialog {
   if (-not $script:addPick) { return }
   $t = [pscustomobject]@{ id = (New-Id); kind = 'app'; name = $script:addPick; monitor = ''; rect = $null; exit = 'leave'; exe = ''; appid = ''; proc = ''; cls = ''; url = ''; hint = ''; clean = $false; mini = $false; minW = 0; minH = 0 }
   if ($script:addPick -eq 'Web page') { $t.kind = 'web'; $t.name = 'Web page'; $t.url = 'https://'; $t.clean = $true; $t.exit = 'close' }
+  elseif ($script:addPick -eq "A friend's Discord stream") {
+    $form.TopMost = $false
+    $who = Show-MiseInput 'Discord stream' "Your friend's Discord display name (as it shows in your voice channel)" ''
+    if (-not $who) { return }
+    $t.kind = 'stream'; $t.name = "$who's stream"; $t.exit = 'close'; $t.minW = 320; $t.minH = 180
+    $t | Add-Member -NotePropertyName streamer -NotePropertyValue $who -Force
+  }
   else {
     $a = $script:addApps | Where-Object { $_.Name -eq $script:addPick } | Select-Object -First 1
     $p = Resolve-AppIdPath $a.Id
@@ -697,7 +723,6 @@ function Start-Runner([string[]]$extra, [string]$headline) {
   $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$runner`"", '-RoutineFile', "`"$tmp`"", '-StatusFile', "`"$st`"") + $extra
   return (Start-Process powershell.exe -ArgumentList $a -WindowStyle Hidden -PassThru)
 }
-$bPrev.Add_Click({ if ($script:R) { $script:helper = 'Preview only moves windows that are already open. Use Test run to start the missing apps and pages.'; $canvas.Invalidate(); $null = Start-Runner @('-Arrange') "Arranging '$($script:R.name)'" } })
 $script:testProc = $null
 $testTimer = New-Object Windows.Forms.Timer; $testTimer.Interval = 700
 $testTimer.Add_Tick({
@@ -712,6 +737,7 @@ $testTimer.Add_Tick({
     elseif ($lines -match "\[$n\] did not open") { $script:marks[$t.id] = 'Failed' }
     elseif ($lines -match "\[$n\] its screen is not connected") { $script:marks[$t.id] = 'No screen' }
     elseif ($t.kind -eq 'ugg') { $script:marks[$t.id] = 'Champ select' }
+    elseif ($t.kind -eq 'stream') { $script:marks[$t.id] = 'When live' }
     if ($script:marks[$t.id] -eq 'Passed' -and ($lines -match "\[$n\] slow to open")) { $script:marks[$t.id] = 'Late' }
   }
   $bTest.Text = 'Test run'; $bTest.Enabled = $true; $bTest.Invalidate()
@@ -724,18 +750,21 @@ $bTest.Add_Click({
   $script:testProc = Start-Runner @() "Starting '$($script:R.name)'"
   $bTest.Text = 'Testing...'; $bTest.Enabled = $false; $bTest.Invalidate(); $testTimer.Start()
 })
-$bSave.Add_Click({ if ($script:R) { $null = Save-Routine } })
+$bSave.Add_Click({ if ($script:R -and (Save-Routine)) { $script:helper = 'Saved'; $canvas.Invalidate() } })
+$bSaveC.Add_Click({ if ($script:R -and (Save-Routine)) { $form.Close() } })
 $bUndo.Add_Click({ Restore-Undo })
 $bCopy.Add_Click({ if ($script:R) { Show-CaptureDialog } })
 $bAdd.Add_Click({ if ($script:R) { Show-AddDialog } })
 $bNewR.Add_Click({ if (Confirm-Leave) { Set-Routine (New-BlankRoutine) } })
-$bDelR.Add_Click({
-  if (-not $script:R) { return }
-  if ((Show-MiseAsk 'Delete routine' "Delete '$($script:R.name)'? This can't be undone." 'Delete' 'Keep it') -ne 'yes') { return }
-  $cf = Get-MiseConfig; $cf.routines = @($cf.routines | Where-Object { $_.id -ne $script:R.id }); Save-MiseConfig $cf; $script:cfg = $cf
-  $script:dirty = $false
-  if (@($cf.routines).Count) { Set-Routine (Copy-Routine @($cf.routines)[0]) } else { Set-Routine (New-BlankRoutine) }
-})
+function Remove-RoutineEntry([string]$id) {
+  $nm = "$((@($script:cfg.routines) + @($script:R) | Where-Object { $_ -and $_.id -eq $id } | Select-Object -First 1).name)"
+  if ((Show-MiseAsk 'Delete routine' "Delete '$nm'? This can't be undone." 'Delete' 'Keep it') -ne 'yes') { return }
+  $cf = Get-MiseConfig; $cf.routines = @($cf.routines | Where-Object { $_.id -ne $id }); Save-MiseConfig $cf; $script:cfg = $cf
+  if ($script:R -and $script:R.id -eq $id) {
+    $script:dirty = $false
+    if (@($cf.routines).Count) { Set-Routine (Copy-Routine @($cf.routines)[0]) } else { Set-Routine (New-BlankRoutine) }
+  } else { Update-List }
+}
 $bHome.Add_Click({ $form.Close() })
 $form.Add_FormClosing({ param($s, $e) if (-not (Confirm-Leave)) { $e.Cancel = $true } })
 

@@ -1,4 +1,4 @@
-﻿<# Mise tray: lives near the clock. Left- or right-click = menu (Open Mise, routines, quick account switch, Reset Mise ...).
+﻿<# Mise tray: lives near the clock. Left- or right-click = menu (Open Mise, routines, quick account switch, Restart Mise ...).
    Registers each routine's hotkey, shows a small progress pop-up while a routine runs, runs the League helpers
    (auto-accept, u.gg page of your champion), logs League play time and checks for updates once a day. #>
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'mise-ui.ps1')
@@ -78,7 +78,7 @@ function Register-Hotkeys {
     $n++
     if ([MiseHotkeyForm]::RegisterHotKey($hk.Handle, $n, [uint32]($h.Mods -bor 0x4000), [uint32]$h.Vk)) { $script:hkMap[$n] = $r.id } else { $failed += "$($r.hotkey) ($($r.name))" }   # 0x4000 = no auto-repeat
   }
-  if ($failed.Count) { $ni.ShowBalloonTip(6000, 'Mise', "Hotkey already in use: $($failed -join ', '). Change it in the editor.", 'Warning') }
+  if ($failed.Count) { $ni.ShowBalloonTip(6000, 'Mise', "Hotkey already in use: $($failed -join ', '). Change it in Edit routines.", 'Warning') }
 }
 $hk.Add_Pressed({ param($id) if ($script:hkMap.ContainsKey($id)) { Start-RoutineById $script:hkMap[$id] } })
 
@@ -87,10 +87,16 @@ $ni = New-Object Windows.Forms.NotifyIcon
 try { $ni.Icon = New-Object Drawing.Icon($script:Icon) } catch { $ni.Icon = [Drawing.SystemIcons]::Application }
 $ni.Text = 'Mise'
 $cm = New-Object Windows.Forms.ContextMenuStrip; $ni.ContextMenuStrip = $cm
+$cm.BackColor = $script:C.Panel; $cm.ForeColor = $script:C.Text
 
 function Stop-AllMise { try { Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match 'mise-run|riot-league|mise-home|mise-builder|mise-ui' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch {} }
-function Open-Home { Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$homeUi`"") }
-# Reset: stop everything Mise is running, clear stale progress, start a fresh helper and the Mise window
+# Mise.exe plays the start animation; without it (no compiler at install) the window opens directly
+function Open-Home {
+  $exe = Join-Path $script:MiseDir 'Mise.exe'
+  if (Test-Path -LiteralPath $exe) { Start-Process -FilePath $exe; return }
+  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$homeUi`"")
+}
+# Restart: stop everything Mise is running, clear stale progress, start a fresh helper and the Mise window
 function Reset-Mise {
   $timer.Stop(); $lcuTimer.Stop(); $toastTimer.Stop()
   try {
@@ -103,51 +109,48 @@ function Reset-Mise {
   Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $enc"
   $ni.Visible = $false; [Windows.Forms.Application]::Exit()
 }
-# Forget everything: settings backed up and emptied, helpers stopped, the tray starts again and opens the first-time setup
-function Reset-FirstTime {
-  $a = [Windows.Forms.MessageBox]::Show("Mise forgets your screens, routines and settings and shows the first-time setup again. Your League accounts stay. A copy of your settings is kept as config-before-first-time.json.`r`n`r`nStart over?", 'Mise', 'YesNo', 'Question')
-  if ($a -ne 'Yes') { return }
-  $timer.Stop(); $lcuTimer.Stop(); $toastTimer.Stop()
+# Stop: ends the routine or account switch that is running now (the stream watcher keeps going)
+function Stop-MiseRun {
   try {
-    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match 'mise-run\.ps1|riot-league\.ps1|mise-home\.ps1|mise-builder\.ps1' } |
+    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match 'mise-run\.ps1|riot-league\.ps1' -and $_.CommandLine -notmatch '-StreamWatch' } |
       ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   } catch {}
-  try { Copy-Item -LiteralPath $script:CfgPath -Destination (Join-Path $script:DataDir 'config-before-first-time.json') -Force } catch {}
-  Save-MiseConfig (New-MiseConfig)
-  foreach ($n in @('_ugg-now.txt', '_last-routine.txt', '_builder-routine.json', 'timings.json')) { Remove-Item -LiteralPath (Join-Path $script:DataDir $n) -Force -ErrorAction SilentlyContinue }
-  Remove-Item -LiteralPath $status -Force -ErrorAction SilentlyContinue
-  $trayFile = Join-Path $script:MiseDir 'mise-tray.ps1'
-  $cmd = "Start-Sleep -Seconds 2; Start-Process powershell.exe -WindowStyle Hidden -ArgumentList ('-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File ' + [char]34 + '$trayFile' + [char]34)"
-  $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
-  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $enc"
-  $ni.Visible = $false; [Windows.Forms.Application]::Exit()
+  $script:runActive = $false; $bStopT.Visible = $false
+  try { Set-Content -LiteralPath $status -Value '' } catch {}
+  $tBody.Text = 'Stopped.'; $script:toastUntil = (Get-Date).AddSeconds(3)
 }
+$script:runActive = $false
 $script:update = $null
 function Build-TrayMenu {
   $cm.Items.Clear()
   $o = $cm.Items.Add('Open Mise'); $o.Font = New-Object Drawing.Font($o.Font, [Drawing.FontStyle]::Bold); $o.Add_Click({ Open-Home })
-  $rs = $cm.Items.Add('Reset Mise'); $rs.Add_Click({ Reset-Mise })
-  $fb = $cm.Items.Add('Send feedback'); $fb.Add_Click({ Show-MiseFeedback })
-  $fg = $cm.Items.Add('Forget everything (start over)'); $fg.Add_Click({ Reset-FirstTime })
   if ($script:update) { $u = $cm.Items.Add("Update to Mise $($script:update.Version)"); $u.Add_Click({ try { Install-MiseUpdate $script:update } catch { $ni.ShowBalloonTip(6000, 'Mise', "Update failed: $($_.Exception.Message)", 'Warning') } }) }
-  [void]$cm.Items.Add('-')
-  foreach ($r in $script:cfg.routines) {
-    $it = $cm.Items.Add($(if ($r.hotkey) { "$($r.name)    $($r.hotkey)" } else { $r.name })); $it.Tag = $r.id
-    $it.Add_Click({ Start-RoutineById $this.Tag })
+  # the running routine (if any): exit it; a start or switch in progress: stop it
+  $act = Get-ActiveRoutineId; $ar = if ($act) { $script:cfg.routines | Where-Object { $_.id -eq $act } | Select-Object -First 1 } else { $null }
+  if ($ar -or $script:runActive) { [void]$cm.Items.Add('-') }
+  if ($ar) { $x = $cm.Items.Add("Exit '$($ar.name)'"); $x.Font = New-Object Drawing.Font($x.Font, [Drawing.FontStyle]::Bold); $x.Tag = $ar.id; $x.Add_Click({ Stop-RoutineById $this.Tag }) }
+  if ($script:runActive) { $st = $cm.Items.Add('Stop'); $st.Add_Click({ Stop-MiseRun }) }
+  if (@($script:cfg.routines).Count) {
+    [void]$cm.Items.Add('-')
+    foreach ($r in $script:cfg.routines) {
+      $it = $cm.Items.Add($(if ($r.hotkey) { "$($r.name)    $($r.hotkey)" } else { $r.name })); $it.Tag = $r.id
+      $it.Add_Click({ Start-RoutineById $this.Tag })
+    }
   }
   $accts = @(Get-RiotAccounts)
   if ($accts.Count) {
     [void]$cm.Items.Add('-')
     foreach ($n in $accts) { $it = $cm.Items.Add("Switch to $n"); $it.Tag = $n; $it.Add_Click({ Start-AccountSwitch $this.Tag }) }
   }
-  # the running routine (if any): one line to exit it
-  $act = Get-ActiveRoutineId; $ar = if ($act) { $script:cfg.routines | Where-Object { $_.id -eq $act } | Select-Object -First 1 } else { $null }
-  if ($ar) { [void]$cm.Items.Add('-'); $x = $cm.Items.Add("Exit '$($ar.name)' (running)"); $x.Font = New-Object Drawing.Font($x.Font, [Drawing.FontStyle]::Bold); $x.Tag = $ar.id; $x.Add_Click({ Stop-RoutineById $this.Tag }) }
+  if ($accts.Count -or (Test-RiotInstalled)) {
+    [void]$cm.Items.Add('-')
+    $mA = New-Object Windows.Forms.ToolStripMenuItem('League: auto-accept match'); $mA.Checked = (Get-Setting 'autoAccept'); $mA.Add_Click({ Set-Setting 'autoAccept' (-not (Get-Setting 'autoAccept')) }); [void]$cm.Items.Add($mA)
+    $mU = New-Object Windows.Forms.ToolStripMenuItem('League: open u.gg for my champion'); $mU.Checked = (Get-Setting 'champPage'); $mU.Add_Click({ Set-Setting 'champPage' (-not (Get-Setting 'champPage')) }); [void]$cm.Items.Add($mU)
+  }
   [void]$cm.Items.Add('-')
-  $mA = New-Object Windows.Forms.ToolStripMenuItem('League: auto-accept match'); $mA.Checked = (Get-Setting 'autoAccept'); $mA.Add_Click({ Set-Setting 'autoAccept' (-not (Get-Setting 'autoAccept')) }); [void]$cm.Items.Add($mA)
-  $mU = New-Object Windows.Forms.ToolStripMenuItem('League: open u.gg for my champion'); $mU.Checked = (Get-Setting 'champPage'); $mU.Add_Click({ Set-Setting 'champPage' (-not (Get-Setting 'champPage')) }); [void]$cm.Items.Add($mU)
-  [void]$cm.Items.Add('-')
-  $e = $cm.Items.Add('Edit routines...'); $e.Add_Click({ Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$editor`"") })
+  $e = $cm.Items.Add('Edit routines'); $e.Add_Click({ Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$editor`"") })
+  $rs = $cm.Items.Add('Restart Mise'); $rs.Add_Click({ Reset-Mise })
+  if ($script:FeedbackForm) { $fb = $cm.Items.Add('Send feedback'); $fb.Add_Click({ Show-MiseFeedback }) }
   $q = $cm.Items.Add('Quit Mise'); $q.Add_Click({ Stop-AllMise; try { $null = Show-AllTaskbars } catch {}; $timer.Stop(); $lcuTimer.Stop(); $toastTimer.Stop(); $ni.Visible = $false; [Windows.Forms.Application]::Exit() })
 }
 $cm.Add_Opening({ $script:cfg = Get-MiseConfig; Build-TrayMenu })
@@ -165,7 +168,10 @@ $toast.FormBorderStyle = 'None'; $toast.ShowInTaskbar = $false; $toast.TopMost =
 $toast.BackColor = $script:C.Bg; $toast.Size = New-Object Drawing.Size(320, 96); $toast.Opacity = 0.95
 $toast.Add_Paint({ $p = New-Object Drawing.Pen($script:C.Line); $_.Graphics.DrawRectangle($p, 0, 0, $toast.Width - 1, $toast.Height - 1) })
 $tHead = New-UiLabel '' 12 8 296 20; $tHead.ForeColor = $script:C.Accent; $tHead.Font = $script:fBig
-$tBody = New-UiLabel '' 12 34 296 58; $toast.Controls.AddRange(@($tHead, $tBody))
+$tBody = New-UiLabel '' 12 34 296 58
+$tHead.Width = 236
+$bStopT = New-Btn 'Stop' 256 8 54 24 'ghost'; $bStopT.Visible = $false; $bStopT.Add_Click({ Stop-MiseRun })
+$toast.Controls.AddRange(@($tHead, $tBody, $bStopT))
 Add-Type -Namespace MiseT -Name Native -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h, int c);'
 $script:toastUntil = [datetime]::MinValue
 $toastTimer = New-Object Windows.Forms.Timer; $toastTimer.Interval = 700
@@ -189,11 +195,12 @@ function Get-ToastSpot([string]$head = '') {
 }
 $toastTimer.Add_Tick({
   try {
+    if ($script:toastUntil -ne [datetime]::MinValue -and (Get-Date) -gt $script:toastUntil) { $toast.Hide(); $script:toastUntil = [datetime]::MinValue; $script:runActive = $false; $bStopT.Visible = $false }
     if (-not (Test-Path $status)) { return }
     $fi = Get-Item -LiteralPath $status
     $lines = @(); try { $fs = [IO.File]::Open($status, 'Open', 'Read', 'ReadWrite'); $sr = New-Object IO.StreamReader($fs); $lines = @($sr.ReadToEnd() -split "`r?`n" | Where-Object { $_.Trim() -ne '' }); $sr.Close() } catch { return }
     if ($lines.Count -eq 0) { return }
-    $head = $lines[0].Trim(); if ($head -notmatch '^(Starting|Exiting|Arranging|Switching to|Checking the client)') { return }
+    $head = $lines[0].Trim(); if ($head -notmatch '^(Starting|Exiting|Arranging|Switching to|Checking the client|Fixing the League client)') { return }
     $age = ((Get-Date) - $fi.LastWriteTime).TotalSeconds
     if ($age -gt 120 -and -not $toast.Visible) { return }
     $fr = Get-Friendly $lines
@@ -204,7 +211,9 @@ $toastTimer.Add_Tick({
       $toast.Location = Get-ToastSpot $head
       [MiseT.Native]::ShowWindow($toast.Handle, 4) | Out-Null; $toast.Visible = $true
     }
-    if ($fr.Done) { if ($script:toastUntil -eq [datetime]::MinValue) { $script:toastUntil = (Get-Date).AddSeconds(5) } } else { $script:toastUntil = [datetime]::MinValue }
+    $running = (-not $fr.Done) -and ($head -match '^(Starting|Switching to|Fixing the League client)')
+    $script:runActive = $running; $bStopT.Visible = $running
+    if ($fr.Done) { $script:runActive = $false; $bStopT.Visible = $false; if ($script:toastUntil -eq [datetime]::MinValue) { $script:toastUntil = (Get-Date).AddSeconds(5) } } else { $script:toastUntil = [datetime]::MinValue }
     if ($script:toastUntil -ne [datetime]::MinValue -and (Get-Date) -gt $script:toastUntil) { $toast.Hide(); $script:toastUntil = [datetime]::MinValue; Set-Content -LiteralPath $status -Value '' }
     if ($age -gt 900) { $toast.Hide() }
   } catch {}
@@ -212,7 +221,7 @@ $toastTimer.Add_Tick({
 $toastTimer.Start()
 
 # ---------- optional League helpers (off by default; switched on in the tray menu) ----------
-$leagueDir = "$env:SystemDrive\Riot Games\League of Legends"
+$leagueDir = Get-LeagueDir
 $acceptAt  = 9      # seconds into the 12 s ready-check at which Accept is pressed
 $uggUrls = @{ Mayhem = 'https://u.gg/lol/champions/aram-mayhem/{slug}-aram-mayhem'; Aram = 'https://u.gg/lol/champions/aram/{slug}-aram'; Rift = 'https://u.gg/lol/champions/{slug}/build/{role}' }
 $slugFix = @{ 'nunuwillump' = 'nunu'; 'renataglasc' = 'renata' }

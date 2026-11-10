@@ -101,7 +101,7 @@ function Read-ScreenName($s, [string]$def) {
 # ---------- which account? (routines whose League step says "ask me") ----------
 function Show-AccountChooser {
   $accts = Get-RiotAccounts
-  if ($accts.Count -eq 0) { [Windows.Forms.MessageBox]::Show("No League accounts are saved yet.`nOpen the editor > Riot accounts to add one.", 'Mise') | Out-Null; return $null }
+  if ($accts.Count -eq 0) { [Windows.Forms.MessageBox]::Show("No League accounts are saved yet.`nPress + Account under Tools to add one.", 'Mise') | Out-Null; return $null }
   # a Mise-styled picker that always sits on top (it used to open behind the Mise window); Esc or x cancels
   $W = 340; $M = 18
   $f = New-MiseDialog 'Which account?' $W 200
@@ -181,40 +181,78 @@ function Show-MiseSettings {
   $cw = $W - 2 * $M
   $bAnim = New-Btn 'Animations' $M $y $cw 38 'setting'; $bAnim.IsSwitch = $true; $bAnim.On = [bool](Get-MiseSetting $cfg 'animations'); $y += 44
   $bAnim.Add_Click({ param($s, $e) $s.On = -not $s.On; $s.Invalidate(); $null = Set-MiseSetting 'animations' $s.On })
-  $bCorner = New-Btn 'Progress pop-up' $M $y $cw 38 'setting'; $bCorner.Tag = "$(Get-MiseSetting $cfg 'toastCorner')"; $bCorner.Chip = $script:CornerNames[$bCorner.Tag]; $y += 44
-  $bCorner.Add_Click({ param($s, $e) $s.Tag = Get-NextKey $script:CornerNames $s.Tag; $s.Chip = $script:CornerNames[$s.Tag]; $s.Invalidate(); $null = Set-MiseSetting 'toastCorner' $s.Tag })
-  $y += 6
+  $bCorner = New-Btn 'Progress pop-up' $M $y $cw 38 'setting'; $bCorner.Tag = "$(Get-MiseSetting $cfg 'toastCorner')"; $bCorner.Chip = $script:CornerNames[$bCorner.Tag]; $y += 40
+  $bCorner.Add_Click({ param($s, $e) Show-PickMenu $s $script:CornerNames { param($k) $null = Set-MiseSetting 'toastCorner' $k } })
+  $f.Controls.Add((New-Label 'Used when a routine has no pop-up spot of its own.' $script:fSmall $script:C.Muted ($M + 2) $y $cw 18)); $y += 24
   $f.Controls.Add((New-Label 'MISE WINDOW' $script:fTiny $script:C.Muted $M $y 200 14)); $y += 20
   $bPos = New-Btn 'Opens at' $M $y $cw 38 'setting'; $bPos.Tag = "$(Get-MiseSetting $cfg 'homePos')"; $bPos.Chip = $script:HomePosNames[$bPos.Tag]; $y += 44
-  $bPos.Add_Click({ param($s, $e) $s.Tag = Get-NextKey $script:HomePosNames $s.Tag; $s.Chip = $script:HomePosNames[$s.Tag]; $s.Invalidate(); $null = Set-MiseSetting 'homePos' $s.Tag; $script:bMonRef.Enabled = ($s.Tag -ne 'remember') })
+  $bPos.Add_Click({ param($s, $e) Show-PickMenu $s $script:HomePosNames { param($k) $null = Set-MiseSetting 'homePos' $k; $script:bMonRef.Enabled = ($k -ne 'remember'); $script:bMonRef.Invalidate() } })
   $mons = @(@{ id = ''; name = 'Main screen' }) + @($cfg.monitors | ForEach-Object { @{ id = $_.id; name = $_.name } })
   $script:monChoices = $mons
   $bMon = New-Btn 'On screen' $M $y $cw 38 'setting'; $script:bMonRef = $bMon
   $mi = 0; for ($k = 0; $k -lt $mons.Count; $k++) { if ($mons[$k].id -eq "$(Get-MiseSetting $cfg 'homeMonitor')") { $mi = $k } }
   $bMon.Tag = $mi; $bMon.Chip = $mons[$mi].name; $bMon.Enabled = ($bPos.Tag -ne 'remember'); $y += 44
-  $bMon.Add_Click({ param($s, $e) $s.Tag = ([int]$s.Tag + 1) % $script:monChoices.Count; $s.Chip = $script:monChoices[$s.Tag].name; $s.Invalidate(); $null = Set-MiseSetting 'homeMonitor' $script:monChoices[$s.Tag].id })
+  $bMon.Add_Click({ param($s, $e)
+    $names = [ordered]@{}; for ($k = 0; $k -lt $script:monChoices.Count; $k++) { $names[$k] = $script:monChoices[$k].name }
+    Show-PickMenu $s $names { param($k) $null = Set-MiseSetting 'homeMonitor' $script:monChoices[[int]$k].id } })
   $y += 6
   $f.Controls.Add((New-Label 'UPDATES' $script:fTiny $script:C.Muted $M $y 200 14)); $y += 20
-  $f.Controls.Add((New-Label 'GitHub repository (owner/name), empty = no update check' $script:fSmall $script:C.Muted $M $y $cw 18)); $y += 20
-  $rt = New-MiseText $M $y ($cw - 108) "$(Get-MiseSetting $cfg 'updateRepo')"; $repo = $rt.Box
-  $bChk = New-Btn 'Check now' ($M + $cw - 100) $y 100 32
-  $bChk.Add_Click({ $null = Set-MiseSetting 'updateRepo' $repo.Text.Trim(); $r = Test-MiseUpdate $true
+  $f.Controls.Add((New-Label "Installed: Mise $script:MiseVersion" $script:fSmall $script:C.Muted $M ($y + 7) ($cw - 168) 18))
+  $bChk = New-Btn 'Check for updates' ($M + $cw - 160) $y 160 32
+  $bChk.Add_Click({ $r = Test-MiseUpdate $true
     if ($r.Available) { if ([Windows.Forms.MessageBox]::Show("$($r.Message)`n`nInstall it now? Mise restarts for a few seconds.", 'Mise', 'YesNo') -eq 'Yes') { try { Install-MiseUpdate $r } catch { [Windows.Forms.MessageBox]::Show("Update failed: $($_.Exception.Message)", 'Mise') | Out-Null } } }
     else { [Windows.Forms.MessageBox]::Show($r.Message, 'Mise') | Out-Null } })
   $y += 44
+  $f.Controls.Add((New-Label 'SCREENS' $script:fTiny $script:C.Muted $M $y 200 14)); $y += 20
+  $bScr = New-Btn 'Name screens' $M $y $cw 32; $bScr.Add_Click({ $script:settingsAction = 'screens'; $f.Close() }); $y += 40
+  $tipS = New-Object Windows.Forms.ToolTip; $tipS.SetToolTip($bScr, 'Name each screen again (after adding or moving one). Routines stay.')
   $f.Controls.Add((New-Label 'TROUBLESHOOTING' $script:fTiny $script:C.Muted $M $y 200 14)); $y += 20
   $hw = [int](($cw - 8) / 2)
-  $bFix = New-Btn 'Fix League client' $M $y $hw 32; $bRes = New-Btn 'Reset Mise' ($M + $hw + 8) $y $hw 32; $y += 40
+  $bFix = New-Btn 'Fix League client' $M $y $hw 32; $bRes = New-Btn 'Restart Mise' ($M + $hw + 8) $y $hw 32; $y += 40
   $bFix.Add_Click({ $script:settingsAction = 'fix'; $f.Close() })
   $bRes.Add_Click({ $script:settingsAction = 'reset'; $f.Close() })
-  $tipS = New-Object Windows.Forms.ToolTip; $tipS.SetToolTip($bRes, 'Stops everything Mise is running and starts it fresh. Routines and settings stay.')
-  $bFb = New-Btn 'Send feedback' $M $y $hw 30 'ghost'; $bFb.Add_Click({ $script:settingsAction = 'feedback'; $f.Close() })
+  $tipS.SetToolTip($bRes, 'Stops everything Mise is running and starts it fresh. Routines and settings stay.')
+  $bOver = New-Btn 'Start over' $M $y $hw 30 'ghost'; $bOver.Add_Click({ $script:settingsAction = 'startover'; $f.Close() })
+  $tipS.SetToolTip($bOver, 'Forget screens, routines and settings and show the first-time setup again. League accounts stay.')
   $bAbout = New-Btn 'About Mise' ($M + $hw + 8) $y $hw 30 'ghost'; $bAbout.Add_Click({ $script:settingsAction = 'about'; $f.Close() }); $y += 38
+  $ctl = @($bAnim, $bCorner, $bPos, $bMon, $bChk, $bScr, $bFix, $bRes, $bOver, $bAbout)
+  # Send feedback shows once the feedback form exists
+  if ($script:FeedbackForm) { $bFb = New-Btn 'Send feedback' $M $y $cw 30 'ghost'; $bFb.Add_Click({ $script:settingsAction = 'feedback'; $f.Close() }); $ctl += $bFb; $y += 38 }
   $done = New-Btn 'Done' $M $y $cw 36 'primary'; $done.Add_Click({ $f.Close() }); $y += 36 + 18
-  $f.Controls.AddRange(@($bAnim, $bCorner, $bPos, $bMon, $rt.Panel, $bChk, $bFix, $bRes, $bFb, $bAbout, $done))
+  $f.Controls.AddRange([Windows.Forms.Control[]]@($ctl + $done))
   $f.ClientSize = New-Object Drawing.Size($W, $y)
-  $f.Add_FormClosing({ $null = Set-MiseSetting 'updateRepo' $repo.Text.Trim() })
   [void]$f.ShowDialog()
+}
+
+# a short list under a setting button; picking one sets the chip and calls $onPick with its key
+function Show-PickMenu($btn, $names, [scriptblock]$onPick) {
+  $m = New-Object Windows.Forms.ContextMenuStrip
+  $m.BackColor = $script:C.Panel; $m.ForeColor = $script:C.Text; $m.ShowImageMargin = $false
+  $m.Tag = @{ Btn = $btn; Names = $names; Pick = $onPick }
+  foreach ($k in @($names.Keys)) {
+    $it = New-Object Windows.Forms.ToolStripMenuItem("$($names[$k])"); $it.Tag = $k; $it.Checked = ("$k" -eq "$($btn.Tag)")
+    $it.Add_Click({ param($s, $e) $t = $s.Owner.Tag; $t.Btn.Tag = $s.Tag; $t.Btn.Chip = "$($t.Names[$s.Tag])"; $t.Btn.Invalidate(); & $t.Pick $s.Tag })
+    [void]$m.Items.Add($it)
+  }
+  $m.Show($btn, (New-Object Drawing.Point(($btn.Width - 180), $btn.Height)))
+}
+# Start over: settings backed up and emptied, helpers stopped, the tray starts again and opens the first-time setup
+function Invoke-StartOver {
+  $a = [Windows.Forms.MessageBox]::Show("Mise forgets your screens, routines and settings and shows the first-time setup again. Your League accounts stay. A copy of your settings is kept as config-before-first-time.json.`r`n`r`nStart over?", 'Mise', 'YesNo', 'Question')
+  if ($a -ne 'Yes') { return $false }
+  try {
+    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match 'mise-run\.ps1|riot-league\.ps1|mise-home\.ps1|mise-builder\.ps1|mise-tray\.ps1' } |
+      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  } catch {}
+  try { Copy-Item -LiteralPath $script:CfgPath -Destination (Join-Path $script:DataDir 'config-before-first-time.json') -Force } catch {}
+  Save-MiseConfig (New-MiseConfig)
+  foreach ($n in @('_ugg-now.txt', '_last-routine.txt', '_active-routine.txt', '_builder-routine.json', 'timings.json')) { Remove-Item -LiteralPath (Join-Path $script:DataDir $n) -Force -ErrorAction SilentlyContinue }
+  Remove-Item -LiteralPath (Join-Path $env:TEMP 'mise-status.txt') -Force -ErrorAction SilentlyContinue
+  $trayFile = Join-Path $script:MiseDir 'mise-tray.ps1'
+  $cmd = "Start-Sleep -Seconds 2; Start-Process powershell.exe -WindowStyle Hidden -ArgumentList ('-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File ' + [char]34 + '$trayFile' + [char]34)"
+  $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
+  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $enc"
+  return $true
 }
 
 # ---------- small input box in the Mise look; returns the text, or $null when cancelled ----------
@@ -342,7 +380,7 @@ function Start-PendingUpdate {
 }
 
 # ---------- League accounts, step by step ----------
-$script:Regions = @('EUW', 'EUNE', 'TR', 'NA', 'KR', 'BR', 'LAN', 'LAS', 'OCE', 'RU', 'JP')
+$script:Regions = @('EUW', 'EUNE', 'TR', 'NA', 'KR', 'BR', 'LAN', 'LAS', 'OCE', 'RU', 'JP', 'ME', 'SEA', 'TW', 'VN')   # Riot's server list, Nov 2026
 function Show-AccountWizard {
   # one step at a time: 1 open Riot Client, 2 log in, 3 name it and save. After saving, the next account starts at step 2.
   $W = 420; $M = 18; $cw = $W - 2 * $M
@@ -382,14 +420,14 @@ function Show-AccountWizard {
     }
   }
   $bOpen.Add_Click({
-    $rc = "$env:SystemDrive\Riot Games\Riot Client\RiotClientServices.exe"
-    if (Test-Path $rc) { Start-Process $rc; & $show 2 } else { $body.Text = "Riot Client doesn't exist on this PC. Install it from riotgames.com, then try again." }
+    $rc = Get-RiotClientExe
+    if (Test-Path -LiteralPath $rc) { Start-Process $rc; & $show 2 } else { $body.Text = "Riot Client doesn't exist on this PC. Install it from riotgames.com, then try again." }
   })
   $bIn.Add_Click({ & $show 3 })
   $bBack.Add_Click({ & $show ($script:accStep - 1) })
   $bNext.Add_Click({ & $show 2 })
   $bSave.Add_Click({
-    $n = ($nick.Text.Trim() -replace '[\\/:*?"<>|]', '').ToUpper()
+    $n = ($nick.Text.Trim() -replace '[\\/:*?"<>|]', '')
     if (-not $n) { $body.Text = 'Type a nickname first.'; return }
     $full = "$n $($reg.SelectedItem)"
     if (@(Get-RiotAccounts) -contains $full) { $body.Text = "$full is already saved. Pick another nickname, or right-click it in the Mise window to update its login."; return }
@@ -430,7 +468,7 @@ function New-EmptyCard([string]$text, [string]$btnText, [scriptblock]$onClick, [
 # ---------- intro: four short pages, once, from the Mise window ----------
 $script:IntroPages = @(
   @{ T = 'Welcome to Mise'; B = "Mise opens your apps and puts every window in its place - with one click or one hotkey." },
-  @{ T = 'Routines'; B = "A routine is your setup: which apps and web pages open, and where each window goes.`r`n`r`nMake one by placing your windows roughly, then Copy my screen. Fine-tune it on the map." },
+  @{ T = 'Routines'; B = "A routine is your setup: which apps and web pages open, and where each window goes.`r`n`r`nMake one in Edit routines: place your windows roughly, then press Copy my screen. Fine-tune it on the map." },
   @{ T = 'League'; B = "Click an account to log in, or to switch if another account is open.`r`n`r`nA routine with League in it asks which account, then starts the client and your lobby while it arranges the rest." },
   @{ T = 'Make it yours'; B = "Settings: accent colour, animations and where this window opens.`r`n`r`nThe tray icon near the clock has your routines and accounts too." }
 )

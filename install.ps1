@@ -38,23 +38,11 @@ Remove-Item -LiteralPath (Join-Path $dst 'mise-arrange.ps1') -Force -ErrorAction
 Get-ChildItem -LiteralPath $dst -Recurse -File | Unblock-File
 $ico = Join-Path $dst 'mise.ico'
 
-# tiny launcher exe: opens the editor with no PowerShell window
-$cs = @'
-using System; using System.Diagnostics; using System.IO;
-class MiseLauncher { static void Main() {
-  string d = AppDomain.CurrentDomain.BaseDirectory;
-  ProcessStartInfo t = new ProcessStartInfo("powershell.exe", "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + Path.Combine(d, "mise-tray.ps1") + "\"");
-  t.UseShellExecute = false; t.CreateNoWindow = true; Process.Start(t);
-  ProcessStartInfo e = new ProcessStartInfo("powershell.exe", "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + Path.Combine(d, "mise-home.ps1") + "\"");
-  e.UseShellExecute = false; e.CreateNoWindow = true; Process.Start(e);
-} }
-'@
-$csFile = Join-Path $dst 'launcher.cs'; $exe = Join-Path $dst 'Mise.exe'
-Set-Content -LiteralPath $csFile -Value $cs -Encoding UTF8
+# tiny launcher exe: starts Mise with no PowerShell window and shows the start animation (source: mise-launcher.cs)
+$csFile = Join-Path $src 'mise-launcher.cs'; $exe = Join-Path $dst 'Mise.exe'
 $csc = @("$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe", "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 $useExe = $false
-if ($csc) { & $csc /nologo /target:winexe "/win32icon:$ico" "/out:$exe" $csFile | Out-Null; $useExe = ($LASTEXITCODE -eq 0) -and (Test-Path $exe) }
-Remove-Item -LiteralPath $csFile -ErrorAction SilentlyContinue
+if ($csc -and (Test-Path $csFile)) { & $csc /nologo /target:winexe "/win32icon:$ico" /r:System.Windows.Forms.dll /r:System.Drawing.dll "/out:$exe" $csFile | Out-Null; $useExe = ($LASTEXITCODE -eq 0) -and (Test-Path $exe) }
 
 $sh = New-Object -ComObject WScript.Shell
 function New-Lnk($path, $target, $lnkArgs, $style) {

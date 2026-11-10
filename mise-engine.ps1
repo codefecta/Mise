@@ -200,9 +200,17 @@ function Start-Tile($tile, $browser) {
 }
 # the window that belongs to a tile: same program (by path, else by process name), biggest visible window first.
 # A web tile only takes a window that is new since the run started, or one whose title holds its hint.
+# a desktop app id often names its program: Microsoft.Office.EXCEL.EXE.15 -> EXCEL, ElectronicArts.EADesktop -> EADesktop
+function Get-AppIdProcGuess([string]$id) {
+  if ($id -match '(?i)([A-Za-z0-9]+)\.exe') { return $Matches[1] }
+  if ($id -match '^[A-Za-z0-9]+(\.[A-Za-z0-9]+)+$') { return ($id -split '\.')[-1] }
+  return ''
+}
 function Find-TileWindow($tile, $snap, $freshIds, $browser) {
   $cands = @()
+  $popH = Get-StreamWin
   foreach ($w in $snap) {
+    if ($popH -and [int64]$w.H -eq $popH) { continue }
     if ($tile.kind -eq 'web') {
       $pn = Get-ProcName $w.Pid
       if (-not $browser -or $pn -ne $browser.Proc) { continue }
@@ -216,7 +224,8 @@ function Find-TileWindow($tile, $snap, $freshIds, $browser) {
     # a Store app already open: its window is hosted by ApplicationFrameHost, so it is matched by title
     # Store apps: the window belongs to the package (its program lives in WindowsApps\<package>...), or it is an
     # ApplicationFrameHost window with the app's name in the title. A learned process name is never trusted for them.
-    if ($tile.appid -and -not $tile.exe) {
+    # app ids without '!' (Excel, EA app...) are ordinary programs: matched like an app whose program is not known yet
+    if ($tile.appid -and -not $tile.exe -and "$($tile.appid)" -match '!') {
       $pkg = (("$($tile.appid)" -split '!')[0] -split '_')[0]
       $tn = if ($tile.hint) { "$($tile.hint)" } else { "$($tile.name)" }
       $p = Get-WindowExe ([uint32]$w.Pid)
@@ -224,6 +233,7 @@ function Find-TileWindow($tile, $snap, $freshIds, $browser) {
       if ($w.Cls -eq 'ApplicationFrameWindow' -and $tn -and $w.Title -like "*$tn*") { $cands += $w }
       continue
     }
+    if (-not $tile.exe -and -not $tile.proc -and $tile.appid) { $gp = Get-AppIdProcGuess "$($tile.appid)"; if ($gp -and (Get-ProcName $w.Pid) -ieq $gp) { $cands += $w; continue } }
     if (-not $tile.exe -and -not $tile.proc) { if ($freshIds -contains [int64]$w.H -and (-not $browser -or (Get-ProcName $w.Pid) -ne $browser.Proc)) { $cands += $w }; continue }
     $ok = $false
     if ($tile.exe) { $p = Get-WindowExe ([uint32]$w.Pid); if ($p -and $p -ieq $tile.exe) { $ok = $true } }
@@ -272,6 +282,142 @@ function Set-SpotifyMiniPlace($tile, $px) {
     if ($v -and ([Math]::Abs($v[0] - $px.X) -gt 3 -or [Math]::Abs($v[1] - $px.Y) -gt 3 -or [Math]::Abs($v[2] - $px.W) -gt 3 -or [Math]::Abs($v[3] - $px.H) -gt 3)) { [MiseWin]::PlaceExact($mini.H, $px.X, $px.Y, $px.W, $px.H) }
   }
   return $mini.H
+}
+
+# ======================= stream tile: a friend's Discord stream, popped out and placed =======================
+# A routine can hold one 'stream' tile with a Discord display name. While that routine runs and League is open,
+# the tray watches Discord: when that person streams in your voice channel, Mise presses Watch Stream, then
+# Pop Out, and puts the popout window on the tile. Buttons are found by their names (screen-reader names),
+# never by screen position. Words in the common Discord languages.
+$script:StreamLive  = '(?i)^(live|canl[\u0131i]|en direct|en vivo|ao vivo|in diretta|na [\u017cz]ywo|\u0432 \u044d\u0444\u0438\u0440\u0435)$'
+$script:StreamWatch = '(?i)(watch stream|join stream|yay[\u0131i]n[\u0131i] [\u0130Ii]zle|yay[\u0131i]na kat[\u0131i]l|regarder le stream|ver transmisi[o\u00f3]n|stream ansehen|guarda (lo )?stream|assistir|ogl[a\u0105]daj)'
+$script:StreamPop   = '(?i)(pop ?out|a[\u00e7c][\u0131i]l[\u0131i]r pencere|ayr[\u0131i] pencere|fen[e\u00ea]tre (flottante|s[e\u00e9]par[e\u00e9]e)|ventana emergente|externes fenster|finestra separata|janela separada)'
+function Get-StreamWinPath { Join-Path $script:DataDir '_stream-win.txt' }
+function Get-StreamWin { try { $f = Get-StreamWinPath; if (Test-Path $f) { $h = [int64](Get-Content -LiteralPath $f -Raw).Trim(); if ($h -and [MiseWin]::IsWindow([IntPtr]$h)) { return $h } } } catch {}; return 0 }
+function Set-StreamWin([int64]$h) { $f = Get-StreamWinPath; if ($h) { Set-Content -LiteralPath $f -Value $h -Encoding UTF8 } else { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }
+# Discord's main window: the biggest Discord window that is not the stream popout
+function Get-DiscordMain {
+  $pop = Get-StreamWin
+  @(Get-WinSnapshot | Where-Object { (Get-ProcName $_.Pid) -eq 'Discord' -and [int64]$_.H -ne $pop }) |
+    Sort-Object @{ Expression = { [MiseWin2]::NormalArea($_.H) }; Descending = $true } | Select-Object -First 1
+}
+function Get-UiaAll($root) {
+  # Chromium builds its accessibility tree on the first question: ask, wait, ask again
+  $all = [System.Windows.Automation.Condition]::TrueCondition
+  $null = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $all); Start-Sleep -Milliseconds 700
+  return @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $all))
+}
+function Get-UiaName($e) { try { return "$($e.Current.Name)" } catch { return '' } }
+# press an element: Invoke, else Select/Toggle, else (only when allowed) a real click on its middle
+function Press-UiaElement($e, [bool]$allowClick) {
+  try { ($e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)).Invoke(); return $true } catch {}
+  try { ($e.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)).Select(); return $true } catch {}
+  try { ($e.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)).Toggle(); return $true } catch {}
+  if ($allowClick) { try { $r = $e.Current.BoundingRectangle; if ($r.Width -gt 0) { [MiseWin]::ClickXY([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2)); return $true } } catch {} }
+  return $false
+}
+# the person's LIVE entry in the voice channel list: an element with their name whose row also says LIVE
+function Find-LiveEntry($els, [string]$who) {
+  $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+  foreach ($e in $els) {
+    $n = Get-UiaName $e
+    if (-not $n -or $n -notlike "*$who*") { continue }
+    if ($n -match '(?i)\b(live|canl[\u0131i]|streaming|yay[\u0131i]nda)\b') { return $e }
+    $p = $null; try { $p = $walker.GetParent($e) } catch {}
+    for ($up = 0; $up -lt 3 -and $p; $up++) {
+      try { foreach ($k in @($p.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition))) { if ((Get-UiaName $k) -match $script:StreamLive) { return $k } } } catch {}
+      try { $p = $walker.GetParent($p) } catch { $p = $null }
+    }
+  }
+  return $null
+}
+# opens <who>'s stream in a popout; returns @{ H = popout handle or 0; Why = what is missing }
+function Open-DiscordStream([string]$who, [bool]$allowClick) {
+  try { Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop } catch { return @{ H = 0; Why = 'accessibility not available' } }
+  $main = Get-DiscordMain
+  if (-not $main) { return @{ H = 0; Why = 'Discord is not open' } }
+  if ([MiseWin]::IsIconic($main.H)) { [MiseWin]::ShowWindow($main.H, 4) | Out-Null; Start-Sleep -Milliseconds 600 }   # restore without taking focus
+  $before = @(Get-WinSnapshot | Where-Object { (Get-ProcName $_.Pid) -eq 'Discord' } | ForEach-Object { [int64]$_.H })
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($main.H)
+  $els = Get-UiaAll $root
+  # already watching (stream open inside Discord)? then only Pop Out is needed
+  $pop = $els | Where-Object { (Get-UiaName $_) -match $script:StreamPop } | Select-Object -First 1
+  if (-not $pop) {
+    $watch = $els | Where-Object { (Get-UiaName $_) -match $script:StreamWatch -and (Get-UiaName $_) -like "*$who*" } | Select-Object -First 1
+    if (-not $watch) {
+      $live = Find-LiveEntry $els $who
+      if (-not $live) { return @{ H = 0; Why = "$who is not streaming in your voice channel" } }
+      if (-not (Press-UiaElement $live $allowClick)) { return @{ H = 0; Why = "could not press $who's LIVE entry" } }
+      Start-Sleep -Milliseconds 1500
+      $els = Get-UiaAll $root
+      $watch = $els | Where-Object { (Get-UiaName $_) -match $script:StreamWatch } | Select-Object -First 1
+    }
+    if ($watch) { if (-not (Press-UiaElement $watch $allowClick)) { return @{ H = 0; Why = 'could not press Watch Stream' } }; Start-Sleep -Milliseconds 2000; $els = Get-UiaAll $root }
+    $pop = $els | Where-Object { (Get-UiaName $_) -match $script:StreamPop } | Select-Object -First 1
+  }
+  if (-not $pop) { return @{ H = 0; Why = 'no Pop Out button (is the stream open in Discord?)' } }
+  if (-not (Press-UiaElement $pop $allowClick)) { return @{ H = 0; Why = 'could not press Pop Out' } }
+  for ($i = 0; $i -lt 16; $i++) {
+    Start-Sleep -Milliseconds 500
+    $new = @(Get-WinSnapshot | Where-Object { (Get-ProcName $_.Pid) -eq 'Discord' -and $before -notcontains [int64]$_.H }) | Select-Object -First 1
+    if ($new) { return @{ H = [int64]$new.H; Why = '' } }
+  }
+  return @{ H = 0; Why = 'pressed Pop Out but no popout window appeared' }
+}
+# the stream watcher: its own hidden process (so the tray never freezes while Discord is searched).
+# Runs while this routine is the active one; acts only while League is open; checks every 10 s.
+function Invoke-StreamWatch($cfg, $routine) {
+  $first = $false; $mx = New-Object System.Threading.Mutex($true, 'Local\MiseStream', [ref]$first)
+  if (-not $first) { return }
+  $tile = @(@($routine.tiles) | Where-Object { $_.kind -eq 'stream' -and "$($_.streamer)".Trim() })[0]
+  if (-not $tile) { return }
+  $who = "$($tile.streamer)".Trim(); $lastWhy = ''; $diagDone = $false; $next = [datetime]::MinValue
+  Write-Log "[stream] watching for $who's stream"
+  while ((Get-ActiveRoutineId) -eq $routine.id) {
+    Start-Sleep -Seconds 2
+    $inGame = [bool](Get-Process -Name 'League of Legends' -ErrorAction SilentlyContinue)
+    if (-not $inGame -and -not (Get-Process -Name 'LeagueClientUx' -ErrorAction SilentlyContinue)) { continue }
+    $px = Get-TilePx $tile @(Get-LiveMonitors $cfg) $routine; if (-not $px) { continue }
+    $h = Get-StreamWin
+    if ($h) {
+      # keep the popout on its tile; placing never takes focus
+      $v = [MiseWin2]::Visible([IntPtr]$h)
+      if ([MiseWin]::IsIconic([IntPtr]$h) -or ($v -and ([Math]::Abs($v[0] - $px.X) -gt 3 -or [Math]::Abs($v[1] - $px.Y) -gt 3 -or [Math]::Abs($v[2] - $px.W) -gt 3 -or [Math]::Abs($v[3] - $px.H) -gt 3))) { Set-WindowPlace ([IntPtr]$h) $px }
+      continue
+    }
+    if ((Get-Date) -lt $next) { continue }
+    $next = (Get-Date).AddSeconds(10)
+    # a real mouse click only outside a game; in game only buttons that can be pressed without the mouse
+    $res = Open-DiscordStream $who (-not $inGame)
+    if ($res.H) {
+      Set-StreamWin $res.H; Set-WindowPlace ([IntPtr]$res.H) $px
+      $c = @{ Track = @() }; Track-ForExit ([pscustomobject]@{ onExit = $(if ($tile.exit -eq 'leave') { 'leave' } else { 'close' }); name = "$($tile.name)" }) ([IntPtr]$res.H) $c; Save-ExitTrack $routine $c
+      Write-Log "[stream] $who's stream popped out and placed"; $lastWhy = ''
+      continue
+    }
+    if ($res.Why -ne $lastWhy) { Write-Log "[stream] $($res.Why)"; $lastWhy = $res.Why }
+    # once: Discord shows something Mise can't use - write what it sees, so the button names can be fixed
+    if (-not $diagDone -and $res.Why -notlike '*not streaming*' -and $res.Why -ne 'Discord is not open') { $diagDone = $true; Write-Log "[stream-diag] $(Get-StreamDiag $who)" }
+  }
+  Set-StreamWin 0
+  Write-Log '[stream] watcher stopped'
+}
+function Start-StreamWatcher($routine, [string]$routineFile = '') {
+  if (-not @(@($routine.tiles) | Where-Object { $_.kind -eq 'stream' -and "$($_.streamer)".Trim() }).Count) { return }
+  $run = Join-Path $script:MiseDir 'mise-run.ps1'
+  $a = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$run`"", '-StreamWatch')
+  if ($routineFile) { $a += @('-RoutineFile', "`"$routineFile`"") } else { $a += @('-Routine', "`"$($routine.id)`"") }
+  Start-Process powershell.exe -ArgumentList $a -WindowStyle Hidden | Out-Null
+}
+# what Discord shows near the person, for the log when something is missing (only names with them or stream words)
+function Get-StreamDiag([string]$who) {
+  try {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop
+    $main = Get-DiscordMain; if (-not $main) { return 'Discord window not found' }
+    $els = Get-UiaAll ([System.Windows.Automation.AutomationElement]::FromHandle($main.H))
+    $hits = @($els | ForEach-Object { $n = Get-UiaName $_; if ($n -and $n.Length -lt 60 -and ($n -like "*$who*" -or $n -match '(?i)live|stream|pop|watch|canl|yay')) { "$($_.Current.ControlType.ProgrammaticName -replace 'ControlType\.', ''):$n" } } | Select-Object -Unique -First 30)
+    return "$($els.Count) elements; " + ($hits -join ' | ')
+  } catch { return "diag failed: $($_.Exception.Message)" }
 }
 
 # ======================= Copy my screen =======================
@@ -397,6 +543,7 @@ function Invoke-TileRoutine($cfg, $routine, $ctx, [string]$mode = 'run') {
   Say "$(if ($mode -eq 'arrange') { 'Arranging' } else { 'Starting' }) '$($routine.name)'"
   if ($mode -eq 'run') { $nh = Hide-OpenWindows; if ($nh) { Say "[desktop] $nh open windows minimized" } }
   if ($routine.id -and (@($routine.tiles).Count -or @($routine.taskbar).Count)) { Set-ActiveRoutineId $routine.id }
+  if ($routine.id) { try { Start-StreamWatcher $routine $script:RoutineFileArg } catch {} }
   # 1. League takes longest: it starts first, everything else is arranged while it loads
   if ($mode -eq 'run' -and $routine.league) { Start-LeaguePart $cfg $routine $ctx $lives }
   # 2. taskbars this routine hides
@@ -437,7 +584,7 @@ function Invoke-TileRoutine($cfg, $routine, $ctx, [string]$mode = 'run') {
           Track-ForExit ([pscustomobject]@{ onExit = $t.exit; name = $t.name }) $h $ctx
         }
         if ($job.Started) { $timings = Add-Timing $timings (Get-TimingKey $t) ((Get-Date) - $job.Started).TotalSeconds }
-        if (-not $t.exe -and -not $t.appid -and -not $t.proc -and $t.kind -eq 'app') { $w = $snap | Where-Object { $_.H -eq $h } | Select-Object -First 1; if ($w) { $learned[$t.id] = @{ proc = (Get-ProcName $w.Pid); cls = $w.Cls } } }
+        if (-not $t.exe -and (-not $t.appid -or "$($t.appid)" -notmatch '!') -and -not $t.proc -and $t.kind -eq 'app') { $w = $snap | Where-Object { $_.H -eq $h } | Select-Object -First 1; if ($w) { $learned[$t.id] = @{ proc = (Get-ProcName $w.Pid); cls = $w.Cls } } }
         $placed[$id] = [int64]$h; $todo.Remove($id); continue
       }
       if ((Get-Date) -gt $job.Deadline) {

@@ -1,6 +1,6 @@
 ﻿# Mise (shared edition) - core library. Dot-sourced by the runner, the tray and the builder.
 # Everything the routines can do lives here, driven by a JSON config:  %APPDATA%\Mise\config.json
-$script:MiseVersion = '0.6.2'
+$script:MiseVersion = '0.6.3'
 # feedback goes to a Google Form (no account needed); filled in when the form exists ('' = keep entries in a local queue)
 $script:FeedbackForm = ''
 $script:FeedbackFields = @{ type = ''; message = ''; name = ''; info = '' }
@@ -385,4 +385,34 @@ function Get-InstalledApps {
 # ======================= run context and messages =======================
 function Say($m) { Write-Host "  $m"; Write-Log $m }
 function New-Ctx { @{ HiddenBars = @(); Account = ''; StatusFile = ''; Pending = @(); Track = @() } }
-function Test-RiotInstalled { Test-Path "$env:SystemDrive\Riot Games\Riot Client\RiotClientServices.exe" }
+# Riot Client and League can be installed on any drive: Riot's own install records first, then the usual folder on every drive
+function Get-RiotClientExe {
+  try {
+    $j = Join-Path $env:ProgramData 'Riot Games\RiotClientInstalls.json'
+    if (Test-Path -LiteralPath $j) {
+      $o = Get-Content -LiteralPath $j -Raw | ConvertFrom-Json
+      foreach ($k in @('rc_default', 'rc_live', 'rc_beta')) { $p = "$($o.$k)"; if ($p -and (Test-Path -LiteralPath $p)) { return (Resolve-Path -LiteralPath $p).Path } }
+    }
+  } catch {}
+  try { $pr = Get-Process -Name 'RiotClientServices' -ErrorAction SilentlyContinue | Select-Object -First 1; if ($pr -and $pr.Path) { return $pr.Path } } catch {}
+  foreach ($d in @([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady })) {
+    $p = Join-Path $d.RootDirectory.FullName 'Riot Games\Riot Client\RiotClientServices.exe'; if (Test-Path -LiteralPath $p) { return $p }
+  }
+  return "$env:SystemDrive\Riot Games\Riot Client\RiotClientServices.exe"
+}
+function Get-LeagueDir {
+  try {
+    $y = Join-Path $env:ProgramData 'Riot Games\Metadata\league_of_legends.live\league_of_legends.live.product_settings.yaml'
+    if (Test-Path -LiteralPath $y) {
+      $m = [regex]::Match((Get-Content -LiteralPath $y -Raw), '(?m)^\s*product_install_full_path:\s*"?([^"\r\n]+)"?')
+      if ($m.Success) { $p = $m.Groups[1].Value.Trim() -replace '/', '\'; if (Test-Path -LiteralPath $p) { return $p } }
+    }
+  } catch {}
+  $rc = Get-RiotClientExe
+  if ($rc) { $p = Join-Path (Split-Path (Split-Path $rc -Parent) -Parent) 'League of Legends'; if (Test-Path -LiteralPath $p) { return $p } }
+  foreach ($d in @([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady })) {
+    $p = Join-Path $d.RootDirectory.FullName 'Riot Games\League of Legends'; if (Test-Path -LiteralPath $p) { return $p }
+  }
+  return "$env:SystemDrive\Riot Games\League of Legends"
+}
+function Test-RiotInstalled { if ($null -eq $script:riotOn) { $script:riotOn = Test-Path -LiteralPath (Get-RiotClientExe) }; return $script:riotOn }

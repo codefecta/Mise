@@ -267,6 +267,7 @@ function Test-RoutineHealth($routine, $envr) {
     if ($t.kind -eq 'app' -or $t.kind -eq 'spotify') {
       if (& $envr.Exists $t) { $out += @{ Level = 'ok'; Text = "$($t.name) found" } } else { $out += @{ Level = 'error'; Text = "$($t.name) is not installed on this PC." } }
     }
+    if ($t.kind -eq 'stream' -and -not "$($t.streamer)".Trim()) { $out += @{ Level = 'error'; Text = "$($t.name): type your friend's Discord name." } }
     if ($t.kind -eq 'web') {
       if (-not "$($t.url)".Trim()) { $out += @{ Level = 'error'; Text = "$($t.name): no address." } }
       elseif ($envr.Browser.Kind -eq 'none') { $out += @{ Level = 'error'; Text = "$($t.name): no supported browser (Chrome, Brave, Vivaldi or Opera; Mise doesn't use Edge)." } }

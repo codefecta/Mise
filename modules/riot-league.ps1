@@ -19,9 +19,40 @@ function Write-Host {
   if ($StatusFile) { try { Add-Content -LiteralPath $StatusFile -Value $m -Encoding UTF8 } catch {} }
 }
 
+# Riot Client and League can be installed on any drive: Riot's own install records first, then the usual folder on every drive
+function Get-RiotClientExe {
+  try {
+    $j = Join-Path $env:ProgramData 'Riot Games\RiotClientInstalls.json'
+    if (Test-Path -LiteralPath $j) {
+      $o = Get-Content -LiteralPath $j -Raw | ConvertFrom-Json
+      foreach ($k in @('rc_default', 'rc_live', 'rc_beta')) { $p = "$($o.$k)"; if ($p -and (Test-Path -LiteralPath $p)) { return (Resolve-Path -LiteralPath $p).Path } }
+    }
+  } catch {}
+  try { $pr = Get-Process -Name 'RiotClientServices' -ErrorAction SilentlyContinue | Select-Object -First 1; if ($pr -and $pr.Path) { return $pr.Path } } catch {}
+  foreach ($d in @([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady })) {
+    $p = Join-Path $d.RootDirectory.FullName 'Riot Games\Riot Client\RiotClientServices.exe'; if (Test-Path -LiteralPath $p) { return $p }
+  }
+  return "$env:SystemDrive\Riot Games\Riot Client\RiotClientServices.exe"
+}
+function Get-LeagueDir {
+  try {
+    $y = Join-Path $env:ProgramData 'Riot Games\Metadata\league_of_legends.live\league_of_legends.live.product_settings.yaml'
+    if (Test-Path -LiteralPath $y) {
+      $m = [regex]::Match((Get-Content -LiteralPath $y -Raw), '(?m)^\s*product_install_full_path:\s*"?([^"\r\n]+)"?')
+      if ($m.Success) { $p = $m.Groups[1].Value.Trim() -replace '/', '\'; if (Test-Path -LiteralPath $p) { return $p } }
+    }
+  } catch {}
+  $rc = Get-RiotClientExe
+  if ($rc) { $p = Join-Path (Split-Path (Split-Path $rc -Parent) -Parent) 'League of Legends'; if (Test-Path -LiteralPath $p) { return $p } }
+  foreach ($d in @([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady })) {
+    $p = Join-Path $d.RootDirectory.FullName 'Riot Games\League of Legends'; if (Test-Path -LiteralPath $p) { return $p }
+  }
+  return "$env:SystemDrive\Riot Games\League of Legends"
+}
+
 # ======================= SETTINGS =======================
-$riotClient = "$env:SystemDrive\Riot Games\Riot Client\RiotClientServices.exe"
-$leagueDir  = "$env:SystemDrive\Riot Games\League of Legends"
+$riotClient = Get-RiotClientExe
+$leagueDir  = Get-LeagueDir
 $riotData   = "$env:LOCALAPPDATA\Riot Games\Riot Client\Data\RiotGamesPrivateSettings.yaml"
 $store      = "$env:USERPROFILE\LeagueAccounts"
 $leagueArgs = @('--launch-product=league_of_legends', '--launch-patchline=live')
@@ -102,8 +133,7 @@ if ($Save) {
     # set the live login aside (kept as a backup) so Riot Client shows a fresh login screen
     Move-Item $riotData (Join-Path $store '_last-live-login.bak') -Force
     Remove-Item (Join-Path $store '_active.txt') -ErrorAction SilentlyContinue
-    $rc = "$env:SystemDrive\Riot Games\Riot Client\RiotClientServices.exe"
-    if (Test-Path $rc) { Start-Process $rc }
+    if (Test-Path -LiteralPath $riotClient) { Start-Process $riotClient }
     Write-Host "Riot Client reopened on the login screen: log in to the NEXT account (tick Stay signed in), then press + Account again."
   }
   exit 0
