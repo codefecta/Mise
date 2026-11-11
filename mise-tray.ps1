@@ -86,8 +86,31 @@ $hk.Add_Pressed({ param($id) if ($script:hkMap.ContainsKey($id)) { Start-Routine
 $ni = New-Object Windows.Forms.NotifyIcon
 try { $ni.Icon = New-Object Drawing.Icon($script:Icon) } catch { $ni.Icon = [Drawing.SystemIcons]::Application }
 $ni.Text = 'Mise'
+# while a routine is on, the tray icon carries a play badge (a shape, not only a colour) and its name
+$script:icoIdle = $ni.Icon; $script:icoRun = $null; $script:trayRun = ''
+function New-RunIcon {
+  try {
+    $bmp = New-Object Drawing.Bitmap(32, 32); $g = [Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = 'AntiAlias'
+    $g.DrawIcon((New-Object Drawing.Icon($script:icoIdle, 32, 32)), (New-Object Drawing.Rectangle(0, 0, 32, 32)))
+    $dk = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(23, 23, 26)); $wh = New-Object Drawing.SolidBrush([Drawing.Color]::White)
+    $g.FillEllipse($dk, 12, 12, 20, 20); $g.FillEllipse($wh, 14, 14, 16, 16)
+    $tri = [Drawing.PointF[]]@((New-Object Drawing.PointF(20, 17.5)), (New-Object Drawing.PointF(20, 26.5)), (New-Object Drawing.PointF(27, 22)))
+    $g.FillPolygon($dk, $tri); $g.Dispose(); $dk.Dispose(); $wh.Dispose()
+    return [Drawing.Icon]::FromHandle($bmp.GetHicon())
+  } catch { return $null }
+}
+function Update-TrayState {
+  $act = Get-ActiveRoutineId; if ($act -eq $script:trayRun) { return }
+  $script:trayRun = $act
+  $ar = $null; if ($act) { $ar = $script:cfg.routines | Where-Object { $_.id -eq $act } | Select-Object -First 1 }
+  if ($ar) {
+    if (-not $script:icoRun) { $script:icoRun = New-RunIcon }
+    if ($script:icoRun) { $ni.Icon = $script:icoRun }
+    $t = "Mise - '$($ar.name)' is on"; if ($t.Length -gt 62) { $t = $t.Substring(0, 62) }; $ni.Text = $t
+  } else { $ni.Icon = $script:icoIdle; $ni.Text = 'Mise' }
+}
 $cm = New-Object Windows.Forms.ContextMenuStrip; $ni.ContextMenuStrip = $cm
-$cm.BackColor = $script:C.Panel; $cm.ForeColor = $script:C.Text
+$cm.BackColor = $script:C.Panel; $cm.ForeColor = $script:C.Text; $cm.ShowImageMargin = $false   # no white strip at the left; On/Off is written out
 
 function Stop-AllMise { try { Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match 'mise-run|riot-league|mise-home|mise-builder|mise-ui' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch {} }
 # Mise.exe plays the start animation; without it (no compiler at install) the window opens directly
@@ -144,8 +167,8 @@ function Build-TrayMenu {
   }
   if ($accts.Count -or (Test-RiotInstalled)) {
     [void]$cm.Items.Add('-')
-    $mA = New-Object Windows.Forms.ToolStripMenuItem('League: auto-accept match'); $mA.Checked = (Get-Setting 'autoAccept'); $mA.Add_Click({ Set-Setting 'autoAccept' (-not (Get-Setting 'autoAccept')) }); [void]$cm.Items.Add($mA)
-    $mU = New-Object Windows.Forms.ToolStripMenuItem('League: open u.gg for my champion'); $mU.Checked = (Get-Setting 'champPage'); $mU.Add_Click({ Set-Setting 'champPage' (-not (Get-Setting 'champPage')) }); [void]$cm.Items.Add($mU)
+    $mA = New-Object Windows.Forms.ToolStripMenuItem("League: auto-accept match  ($(if (Get-Setting 'autoAccept') { 'On' } else { 'Off' }))"); $mA.Add_Click({ Set-Setting 'autoAccept' (-not (Get-Setting 'autoAccept')) }); [void]$cm.Items.Add($mA)
+    $mU = New-Object Windows.Forms.ToolStripMenuItem("League: open u.gg for my champion  ($(if (Get-Setting 'champPage') { 'On' } else { 'Off' }))"); $mU.Add_Click({ Set-Setting 'champPage' (-not (Get-Setting 'champPage')) }); [void]$cm.Items.Add($mU)
   }
   [void]$cm.Items.Add('-')
   $e = $cm.Items.Add('Edit routines'); $e.Add_Click({ Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$editor`"") })
@@ -351,7 +374,28 @@ function Watch-League {
   }
 }
 $lcuTimer = New-Object Windows.Forms.Timer; $lcuTimer.Interval = 2000
-$lcuTimer.Add_Tick({ try { Watch-League } catch {} })
+# auto-exit: a League routine exits by itself once the League client has been gone for a minute
+# (the client restarting during a routine start, account switch or fix does not count)
+$script:axId = ''; $script:axSeen = $false; $script:axGone = $null
+function Watch-AutoExit {
+  if (-not [bool](Get-MiseSetting $script:cfg 'autoExit')) { $script:axId = ''; return }
+  $act = Get-ActiveRoutineId
+  if ($act -ne $script:axId) { $script:axId = $act; $script:axSeen = $false; $script:axGone = $null }
+  if (-not $act) { return }
+  $r = $script:cfg.routines | Where-Object { $_.id -eq $act } | Select-Object -First 1
+  if (-not $r -or -not $r.league) { return }
+  if (Get-Process -Name 'LeagueClient', 'LeagueClientUx', 'League of Legends' -ErrorAction SilentlyContinue) { $script:axSeen = $true; $script:axGone = $null; return }
+  if (-not $script:axSeen) { return }
+  if (-not $script:axGone) { $script:axGone = Get-Date; return }
+  if (((Get-Date) - $script:axGone).TotalSeconds -lt 60) { return }
+  $busy = ($script:runProc -and -not $script:runProc.HasExited)
+  if (-not $busy) { try { $busy = [bool](Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match 'mise-run\.ps1|riot-league\.ps1' }) } catch {} }
+  if ($busy) { $script:axGone = $null; return }
+  $script:axSeen = $false; $script:axGone = $null
+  Write-Log "auto-exit: League client closed, exiting '$($r.name)'"
+  Stop-RoutineById $act
+}
+$lcuTimer.Add_Tick({ try { Watch-League } catch {}; try { Watch-AutoExit } catch {} })
 $lcuTimer.Start()
 
 # ---------- reload hotkeys when the editor saves ----------
@@ -359,10 +403,11 @@ $timer = New-Object Windows.Forms.Timer; $timer.Interval = 2000
 $timer.Add_Tick({ try {
   $st = if (Test-Path $script:CfgPath) { (Get-Item $script:CfgPath).LastWriteTime } else { [datetime]::MinValue }
   if ($st -ne $script:cfgStamp) { $script:cfgStamp = $st; $script:cfg = Get-MiseConfig; Register-Hotkeys }
-} catch {} })
+} catch {}
+  try { Update-TrayState } catch {} })
 $timer.Start()
 
-# update check: once a day, 30 s after start, only when a GitHub repository is set in Settings
+# update check: 30 s after every start and then every 6 hours, only when a GitHub repository is set in Settings
 $updTimer = New-Object Windows.Forms.Timer; $updTimer.Interval = 30000
 $updTimer.Add_Tick({
   $updTimer.Interval = 3600000   # first check 30 s after start, then hourly
@@ -388,7 +433,8 @@ $updTimer.Add_Tick({
     # a downloaded update waits for a quiet moment: no League, no routine, no Mise window
     if (Test-Path (Get-UpdateReadyPath)) { if (Test-UpdateSafe) { if (Start-PendingUpdate) { $ni.Visible = $false; [Windows.Forms.Application]::Exit() } }; return }
     $last = "$(Get-MiseSetting $script:cfg 'lastUpdateCheck')"
-    $due = (-not $last) -or (((Get-Date) - [datetime]$last).TotalHours -ge 6)
+    # every start of the helper checks once; after that every 6 hours
+    $due = (-not $script:updStartDone) -or (-not $last) -or (((Get-Date) - [datetime]$last).TotalHours -ge 6); $script:updStartDone = $true
     if ("$(Get-MiseSetting $script:cfg 'updateRepo')" -and $due) {
       $u = Test-MiseUpdate
       if ($u.Available) { $script:update = $u; try { Save-MiseUpdate $u; Remove-Item -LiteralPath (Join-Path $script:DataDir '_update-error.txt') -Force -ErrorAction SilentlyContinue } catch { try { Set-Content -LiteralPath (Join-Path $script:DataDir '_update-error.txt') -Value "$(Get-Date -Format s) $($_.Exception.Message)" -Encoding UTF8 } catch {} } }

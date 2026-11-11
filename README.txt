@@ -1,4 +1,4 @@
-﻿Mise (shared edition) 0.6.4 - everything in its place before you play
+﻿Mise (shared edition) 0.6.5 - everything in its place before you play
 (mise = short for 'mise en place', a chef's habit: everything in its place before service starts.)
 
 INSTALL
@@ -48,7 +48,10 @@ THE MISE WINDOW (desktop icon, or tray > Open Mise)
 - League options (when League is installed): auto-accept, lobby after login (pick from the list), u.gg page for your champion.
 - Exit '<routine>' shows while a routine runs.
 - The gear: look, pop-up corner, window spot, check for updates, Name screens, Fix League client, Restart Mise,
-  Start over (first-time setup again, League accounts stay), About.
+  Start over (first-time setup again, League accounts stay), Uninstall Mise, About.
+  Routine rows show small icons of their apps. League options > Exit routine when League closes: a League routine
+  exits by itself about a minute after the League client is closed.
+  Drag a routine or account row up or down to reorder it. The tray icon shows a play badge while a routine is on.
 
 TRAY (left- or right-click the icon)
 Open Mise, Exit and Stop for the running routine, your routines, Switch to (accounts), the League options, Edit routines, Restart Mise, Quit Mise.
@@ -63,4 +66,4 @@ UPDATES
 Mise checks GitHub (codefecta/Mise) every few hours and installs the update quietly when nothing is running. Settings > Check for updates checks right now.
 
 Your routines and settings live in %APPDATA%\Mise\config.json and are kept when you update or uninstall.
-UNINSTALL.cmd removes Mise (not your routines or saved logins).
+Settings > Uninstall Mise (or UNINSTALL.cmd) removes Mise (not your routines or saved logins).

@@ -50,7 +50,11 @@ $script:QueueList = @(@{ Id = 2400; Name = 'ARAM Mayhem' }, @{ Id = 450; Name = 
 function Get-RiotAccounts {
   $d = Join-Path $env:USERPROFILE 'LeagueAccounts'
   if (-not (Test-Path $d)) { return @() }
-  return @(Get-ChildItem -LiteralPath $d -Filter *.yaml | Where-Object { $_.BaseName -notlike '_*' } | Sort-Object CreationTime, Name | ForEach-Object { $_.BaseName })
+  $all = @(Get-ChildItem -LiteralPath $d -Filter *.yaml | Where-Object { $_.BaseName -notlike '_*' } | Sort-Object CreationTime, Name | ForEach-Object { $_.BaseName })
+  # the order the user dragged them into comes first; accounts added later follow in the order they were saved
+  $ord = @(); try { $ord = @((Get-MiseSetting (Get-MiseConfig) 'accountOrder') | Where-Object { $_ } | ForEach-Object { "$_" }) } catch {}
+  if (-not $ord.Count) { return $all }
+  return @(@($ord | Where-Object { $all -contains $_ }) + @($all | Where-Object { $ord -notcontains $_ }))
 }
 
 # ---------- monitor wizard: flash a number on every screen, the user names each one ----------
@@ -214,8 +218,10 @@ function Show-MiseSettings {
   $tipS.SetToolTip($bRes, 'Stops everything Mise is running and starts it fresh. Routines and settings stay.')
   $bOver = New-Btn 'Start over' $M $y $hw 30 'ghost'; $bOver.Add_Click({ $script:settingsAction = 'startover'; $f.Close() })
   $tipS.SetToolTip($bOver, 'Forget screens, routines and settings and show the first-time setup again. League accounts stay.')
-  $bAbout = New-Btn 'About Mise' ($M + $hw + 8) $y $hw 30 'ghost'; $bAbout.Add_Click({ $script:settingsAction = 'about'; $f.Close() }); $y += 38
-  $ctl = @($bAnim, $bCorner, $bPos, $bMon, $bChk, $bScr, $bFix, $bRes, $bOver, $bAbout)
+  $bUn = New-Btn 'Uninstall Mise' ($M + $hw + 8) $y $hw 30 'ghost'; $bUn.Add_Click({ $script:settingsAction = 'uninstall'; $f.Close() }); $y += 36
+  $tipS.SetToolTip($bUn, 'Remove Mise from this PC. Routines, settings and League accounts stay, so a new install picks them up.')
+  $bAbout = New-Btn 'About Mise' $M $y $cw 30 'ghost'; $bAbout.Add_Click({ $script:settingsAction = 'about'; $f.Close() }); $y += 38
+  $ctl = @($bAnim, $bCorner, $bPos, $bMon, $bChk, $bScr, $bFix, $bRes, $bOver, $bUn, $bAbout)
   # Send feedback shows once the feedback form exists
   if ($script:FeedbackForm) { $bFb = New-Btn 'Send feedback' $M $y $cw 30 'ghost'; $bFb.Add_Click({ $script:settingsAction = 'feedback'; $f.Close() }); $ctl += $bFb; $y += 38 }
   $done = New-Btn 'Done' $M $y $cw 36 'primary'; $done.Add_Click({ $f.Close() }); $y += 36 + 18
@@ -252,6 +258,26 @@ function Invoke-StartOver {
   $cmd = "Start-Sleep -Seconds 2; Start-Process powershell.exe -WindowStyle Hidden -ArgumentList ('-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File ' + [char]34 + '$trayFile' + [char]34)"
   $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
   Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $enc"
+  return $true
+}
+
+# Uninstall: everything Mise is running stops, shortcuts and the app folder go; %APPDATA%\Mise and LeagueAccounts stay
+function Invoke-MiseUninstall {
+  $a = [Windows.Forms.MessageBox]::Show("Remove Mise from this PC?`r`n`r`nThe app, its desktop icon and its start with Windows are removed. Your routines, settings and League accounts stay, so installing Mise again picks them up.", 'Mise', 'YesNo', 'Question')
+  if ($a -ne 'Yes') { return $false }
+  try { $null = Show-AllTaskbars } catch {}   # a running routine may have hidden them
+  $dir = $script:MiseDir
+  $cmd = @(
+    'Start-Sleep -Seconds 2'
+    "Get-CimInstance Win32_Process | Where-Object { `$_.Name -eq 'powershell.exe' -and `$_.ProcessId -ne `$PID -and `$_.CommandLine -match 'mise-run\.ps1|riot-league\.ps1|mise-home\.ps1|mise-builder\.ps1|mise-tray\.ps1' } | ForEach-Object { Stop-Process -Id `$_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    "Get-Process -Name 'Mise' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"
+    "Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Mise.lnk'), (Join-Path ([Environment]::GetFolderPath('Programs')) 'Mise.lnk'), (Join-Path ([Environment]::GetFolderPath('Startup')) 'Mise tray.lnk') -Force -ErrorAction SilentlyContinue"
+    'Start-Sleep -Milliseconds 500'
+    "Remove-Item -LiteralPath '$($dir -replace "'", "''")' -Recurse -Force -ErrorAction SilentlyContinue"
+    "Add-Type -AssemblyName System.Windows.Forms; [void][Windows.Forms.MessageBox]::Show('Mise is removed. Your routines and League accounts are kept.', 'Mise')"
+  ) -join '; '
+  $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
+  Start-Process powershell.exe -WindowStyle Hidden -WorkingDirectory $env:TEMP -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $enc"
   return $true
 }
 

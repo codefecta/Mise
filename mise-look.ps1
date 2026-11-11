@@ -50,6 +50,8 @@ public class MiseTween {
 public class MiseBtn : Button {
   public string Kind = "tool";     // tool | primary | ghost | row | setting | seg
   public string Num = "";          // row: number
+  public string Group = "";        // row: which list it belongs to (drag to reorder)
+  public Image[] Icons = null;     // row: small app icons after the name
   public string Sub = "";          // row: small grey text on the right
   public string Chip = "";         // row: region chip / setting: value
   public bool Dots = false;        // row: a ... at the right end (its own click zone, see DotsHit)
@@ -209,8 +211,22 @@ public class MiseBtn : Button {
         float reserve = 14f;
         if (Dots) reserve += 26f;
         if (Chip.Length > 0) reserve = g.MeasureString(Chip, TinyFont).Width + 14f + 10f + 14f;
-        if (Sub.Length > 0) reserve += 110f;
-        g.DrawString(Text, Font, tb, new RectangleF(40, 0, Math.Max(20f, Width - 40 - reserve), Height), sf);
+        bool hasIcons = Icons != null && Icons.Length > 0;
+        if (Sub.Length > 0) reserve += hasIcons ? g.MeasureString(Sub, SmallFont).Width + 12f : 110f;
+        float textMax = Math.Max(20f, Width - 40 - reserve - (hasIcons ? Math.Min(Icons.Length, 3) * 21f + 8f : 0f));
+        g.DrawString(Text, Font, tb, new RectangleF(40, 0, textMax, Height), sf);
+        if (hasIcons) {
+          // the apps this routine opens: as many icons as fit, then "+n"
+          float ix = 40 + Math.Min(g.MeasureString(Text, Font).Width, textMax) + 8f, lim = Width - reserve - 2f; int shown = 0;
+          InterpolationMode om = g.InterpolationMode; g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+          for (int k = 0; k < Icons.Length; k++) {
+            if (ix + 16f > lim - (k < Icons.Length - 1 ? 22f : 0f)) break;
+            if (Icons[k] != null) g.DrawImage(Icons[k], new RectangleF(ix, (Height - 16) / 2f, 16f, 16f));
+            ix += 21f; shown++;
+          }
+          g.InterpolationMode = om;
+          if (shown < Icons.Length && shown > 0) using (SolidBrush pb = new SolidBrush(MutedC)) g.DrawString("+" + (Icons.Length - shown), TinyFont, pb, new RectangleF(ix - 2f, 0, 30f, Height), sf);
+        }
         float right = Width - 14;
         if (Dots) {
           // three dots in the row's own colours; brighter while the row is hovered
@@ -396,6 +412,78 @@ public class MiseCaret : Control {
 }
 "@
 Update-MiseLook (Get-MiseConfig)
+
+# ---------- small app icons for routine rows ----------
+# Store apps have no exe to read an icon from: the shell hands out their icon by app id. Optional: without it a letter badge is drawn.
+try {
+Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @"
+using System; using System.Drawing; using System.Drawing.Imaging; using System.Runtime.InteropServices;
+public static class MiseShellIcon {
+  [StructLayout(LayoutKind.Sequential)] public struct SIZE { public int cx; public int cy; }
+  [ComImport, Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface IShellItemImageFactory { [PreserveSig] int GetImage(SIZE size, int flags, out IntPtr phbm); }
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+  static extern int SHCreateItemFromParsingName(string path, IntPtr pbc, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out IShellItemImageFactory item);
+  [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr h);
+  public static Bitmap Get(string parsingName, int px) {
+    Guid iid = new Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b"); IShellItemImageFactory f;
+    if (SHCreateItemFromParsingName(parsingName, IntPtr.Zero, ref iid, out f) != 0 || f == null) return null;
+    SIZE s; s.cx = px; s.cy = px; IntPtr hb;
+    if (f.GetImage(s, 4, out hb) != 0 || hb == IntPtr.Zero) return null;   // 4 = icon only
+    try {
+      using (Bitmap raw = Image.FromHbitmap(hb)) {
+        // FromHbitmap drops the alpha channel: read the same pixels again as premultiplied ARGB
+        Rectangle r = new Rectangle(0, 0, raw.Width, raw.Height);
+        BitmapData d = raw.LockBits(r, ImageLockMode.ReadOnly, PixelFormat.Format32bppRgb);
+        try {
+          int n = d.Stride * d.Height; byte[] buf = new byte[n]; Marshal.Copy(d.Scan0, buf, 0, n);
+          bool anyAlpha = false; for (int i = 3; i < n; i += 4) if (buf[i] != 0) { anyAlpha = true; break; }
+          Bitmap outB = new Bitmap(raw.Width, raw.Height, anyAlpha ? PixelFormat.Format32bppPArgb : PixelFormat.Format32bppRgb);
+          BitmapData o = outB.LockBits(r, ImageLockMode.WriteOnly, outB.PixelFormat);
+          for (int y = 0; y < d.Height; y++) Marshal.Copy(buf, y * d.Stride, new IntPtr(o.Scan0.ToInt64() + (long)y * o.Stride), Math.Min(d.Stride, o.Stride));
+          outB.UnlockBits(o); return outB;
+        } finally { raw.UnlockBits(d); }
+      }
+    } finally { DeleteObject(hb); }
+  }
+}
+"@
+} catch {}
+$script:tileIcons = @{}
+function New-LetterIcon([string]$name) {
+  $bmp = New-Object Drawing.Bitmap(32, 32); $g = [Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = 'AntiAlias'; $g.TextRenderingHint = 'AntiAliasGridFit'
+  $bg = New-Object Drawing.SolidBrush($script:C.Line); $g.FillEllipse($bg, 1, 1, 30, 30); $bg.Dispose()
+  $ch = '?'; $n = "$name".Trim(); if ($n) { $ch = $n.Substring(0, 1).ToUpper() }
+  $sf = New-Object Drawing.StringFormat; $sf.Alignment = 'Center'; $sf.LineAlignment = 'Center'
+  $f = New-Object Drawing.Font('Segoe UI Semibold', 13); $tb = New-Object Drawing.SolidBrush($script:C.Text)
+  $g.DrawString($ch, $f, $tb, (New-Object Drawing.RectangleF(0, 1, 32, 32)), $sf); $f.Dispose(); $tb.Dispose(); $sf.Dispose(); $g.Dispose()
+  return $bmp
+}
+function Get-ExeIcon([string]$exe) {
+  if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { return $null }
+  try { $ic = [Drawing.Icon]::ExtractAssociatedIcon($exe); if ($ic) { return $ic.ToBitmap() } } catch {}
+  return $null
+}
+# the icon of the app a tile opens (cached while the window is open); never fails: a letter badge is the fallback
+function Get-TileIcon($tile, $browser) {
+  $key = "$($tile.kind)|$($tile.exe)|$($tile.appid)|$($tile.name)"
+  if ($script:tileIcons.ContainsKey($key)) { return $script:tileIcons[$key] }
+  $img = $null
+  try {
+    switch ("$($tile.kind)") {
+      { $_ -in 'web', 'ugg' } { if ($browser -and $browser.Exe) { $img = Get-ExeIcon $browser.Exe } }
+      'league' { $ld = Get-LeagueDir; if ($ld) { $img = Get-ExeIcon (Join-Path $ld 'LeagueClient.exe') }; if (-not $img) { $img = Get-ExeIcon (Get-RiotClientExe) } }
+      'spotify' { $img = Get-ExeIcon (Join-Path $env:APPDATA 'Spotify\Spotify.exe') }
+      'stream' { $dc = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Discord\app-*\Discord.exe') -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if ($dc) { $img = Get-ExeIcon $dc.FullName } }
+    }
+    if (-not $img -and $tile.exe) { $img = Get-ExeIcon (Resolve-TileExe "$($tile.exe)") }
+    if (-not $img -and $tile.appid) { try { $img = [MiseShellIcon]::Get("shell:AppsFolder\$($tile.appid)", 32) } catch {} }
+    if (-not $img -and "$($tile.kind)" -eq 'spotify') { try { $sa = Get-StartApps | Where-Object { $_.Name -eq 'Spotify' } | Select-Object -First 1; if ($sa) { $img = [MiseShellIcon]::Get("shell:AppsFolder\$($sa.AppID)", 32) } } catch {} }
+  } catch {}
+  if (-not $img) { $img = New-LetterIcon "$($tile.name)" }
+  $script:tileIcons[$key] = $img
+  return $img
+}
 
 function New-Btn($text, $x = 0, $y = 0, $w = 100, $h = 34, $kind = 'tool', $font = $null) {
   $b = New-Object MiseBtn

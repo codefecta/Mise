@@ -54,14 +54,15 @@ $optCaret = New-Object MiseCaret; $optCaret.BackColor = $script:C.Bg; $optCaret.
 $optCaret.Open = $script:optsOpen
 function Show-OptsHeader { $secOpt.Text = 'LEAGUE OPTIONS'; $secOpt.AutoSize = $true; $optCaret.Open = $script:optsOpen }
 $secOpt.Cursor = 'Hand'
-$secOpt.Add_Click({ $script:optsOpen = -not $script:optsOpen; $script:cfg = Set-MiseSetting 'optsOpen' $script:optsOpen; Show-OptsHeader; Hide-QueueList; Do-Layout })
-$optCaret.Add_Click({ $script:optsOpen = -not $script:optsOpen; $script:cfg = Set-MiseSetting 'optsOpen' $script:optsOpen; Show-OptsHeader; Hide-QueueList; Do-Layout })
+$secOpt.Add_Click({ $script:optsOpen = -not $script:optsOpen; $script:cfg = Set-MiseSetting 'optsOpen' $script:optsOpen; Show-OptsHeader; $script:qOpen = $false; $qList.Visible = $false; Do-Layout })
+$optCaret.Add_Click({ $script:optsOpen = -not $script:optsOpen; $script:cfg = Set-MiseSetting 'optsOpen' $script:optsOpen; Show-OptsHeader; $script:qOpen = $false; $qList.Visible = $false; Do-Layout })
 Show-OptsHeader
 
 # ---------- routines + accounts (rebuilt when the config changes) ----------
 $rtPanel = New-Object Windows.Forms.Panel; $rtPanel.BackColor = $script:C.Bg; $form.Controls.Add($rtPanel)
 $accPanel = New-Object Windows.Forms.Panel; $accPanel.BackColor = $script:C.Bg; $form.Controls.Add($accPanel)
 $script:rtButtons = @(); $script:accButtons = @()
+$script:browser = $null; try { $script:browser = Get-DefaultBrowser } catch {}
 
 # right-click an account: save the current Riot session into it again, or remove it
 $accMenu = New-Object Windows.Forms.ContextMenuStrip
@@ -73,6 +74,42 @@ $miRem.Add_Click({
   $n = $accMenu.SourceControl.Tag
   if ($n -and [Windows.Forms.MessageBox]::Show("Remove '$n' from Mise?", 'Mise', 'YesNo', 'Question') -eq 'Yes') { Remove-Item -LiteralPath (Join-Path $store "$n.yaml") -ErrorAction SilentlyContinue; Build-Lists; Do-Layout }
 })
+
+# drag a routine or account row up or down to reorder it; the order is kept (tray menu and builder follow it)
+$script:drag = $null; $script:dragAt = [datetime]::MinValue
+# a row's Click can come before or after its MouseUp: both orders are covered
+function Test-JustDragged { return (($script:drag -and $script:drag.On) -or (((Get-Date) - $script:dragAt).TotalMilliseconds -lt 400)) }
+function Get-DragSlot($d) { $n = $d.List.Count; return [Math]::Max(0, [Math]::Min($n - 1, [int][Math]::Round($d.Btn.Top / 50.0))) }
+function Add-RowDrag($b, [string]$kind) {
+  $b.Group = $kind
+  $b.Add_MouseDown({ param($s, $e)
+    if ($e.Button -ne 'Left') { return }
+    $list = $(if ($s.Group -eq 'rt') { @($script:rtButtons) } else { @($script:accButtons) })
+    if ($list.Count -lt 2) { return }
+    $script:drag = @{ Btn = $s; List = $list; Y0 = [Windows.Forms.Cursor]::Position.Y; Top0 = $s.Top; On = $false } })
+  $b.Add_MouseMove({ param($s, $e)
+    $d = $script:drag; if (-not $d -or -not [object]::ReferenceEquals($d.Btn, $s)) { return }
+    if ($e.Button -ne 'Left') { $script:drag = $null; return }
+    $dy = [Windows.Forms.Cursor]::Position.Y - $d.Y0
+    if (-not $d.On) { if ([Math]::Abs($dy) -lt 8) { return }; $d.On = $true; $s.BringToFront(); $s.Cursor = [Windows.Forms.Cursors]::SizeNS }
+    $s.Top = [Math]::Max(0, [Math]::Min(($d.List.Count - 1) * 50, $d.Top0 + $dy))
+    $t = Get-DragSlot $d; $k = 0
+    foreach ($o in $d.List) { if ([object]::ReferenceEquals($o, $s)) { continue }; if ($k -eq $t) { $k++ }; $o.Top = $k * 50; $k++ } })
+  $b.Add_MouseUp({ param($s, $e)
+    $d = $script:drag; $script:drag = $null
+    if (-not $d -or -not $d.On) { return }
+    $script:dragAt = Get-Date; $s.Cursor = [Windows.Forms.Cursors]::Default
+    $t = Get-DragSlot $d
+    $ids = New-Object Collections.ArrayList; foreach ($o in $d.List) { if (-not [object]::ReferenceEquals($o, $s)) { [void]$ids.Add("$($o.Tag)") } }
+    $ids.Insert($t, "$($s.Tag)")
+    try {
+      if ($s.Group -eq 'rt') {
+        $c = Get-MiseConfig; $byId = @{}; foreach ($r in $c.routines) { $byId["$($r.id)"] = $r }
+        $c.routines = @($ids | ForEach-Object { $byId[$_] } | Where-Object { $_ }); Save-MiseConfig $c; $script:cfg = $c
+      } else { $script:cfg = Set-MiseSetting 'accountOrder' @($ids) }
+    } catch {}
+    Build-Lists; Do-Layout })
+}
 
 # the builder opens on a new routine; the Mise window steps away while you build
 function New-RoutineFromHome {
@@ -95,7 +132,14 @@ function Build-Lists {
     $b = New-Btn $r.name 0 $y $cw 44 'row' $script:fBig
     $b.Tag = $r.id; $b.Chip = "$($r.hotkey)"
     if ($r.id -eq $lastId) { $b.Sub = 'last' }
-    $b.Add_Click({ param($s, $e) Start-Routine $s.Tag '' })
+    # small icons of the apps this routine opens (one per app, in tile order)
+    try {
+      $ics = New-Object Collections.ArrayList; $seen = @{}
+      foreach ($t in @($r.tiles)) { if (-not $t -or "$($t.kind)" -eq 'mise') { continue }; $ic = Get-TileIcon $t $script:browser; if ($ic -and -not $seen.ContainsKey($ic.GetHashCode())) { $seen[$ic.GetHashCode()] = 1; [void]$ics.Add($ic) } }
+      if ($ics.Count) { $b.Icons = [Drawing.Image[]]@($ics) }
+    } catch {}
+    $b.Add_Click({ param($s, $e) if (Test-JustDragged) { return }; Start-Routine $s.Tag '' })
+    Add-RowDrag $b 'rt'
     $rtPanel.Controls.Add($b); $script:rtButtons += $b; $y += 44 + 6
   }
   if ($i -eq 0) {
@@ -118,8 +162,9 @@ function Build-Lists {
       $b.Tag = $n; $b.Chip = $region; $b.On = ($n -eq $active)
       $b.Sub = ('{0:N1} h this week' -f [double]$hours[$n])
       # the ... at the row's right end opens the account menu; the rest of the row logs in
-      $b.Add_Click({ param($s, $e) if ($s.DotsHit($s.PointToClient([Windows.Forms.Cursor]::Position).X)) { $accMenu.Show($s, (New-Object Drawing.Point(($s.Width - 36), $s.Height))) } else { Start-Account $s.Tag } })
+      $b.Add_Click({ param($s, $e) if (Test-JustDragged) { return }; if ($s.DotsHit($s.PointToClient([Windows.Forms.Cursor]::Position).X)) { $accMenu.Show($s, (New-Object Drawing.Point(($s.Width - 36), $s.Height))) } else { Start-Account $s.Tag } })
       $b.ContextMenuStrip = $accMenu
+      Add-RowDrag $b 'acc'
       $accPanel.Controls.Add($b); $script:accButtons += $b; $y += 44 + 6
     }
   }
@@ -153,15 +198,17 @@ function Show-Tools {
 $btnAcc   = New-Btn 'Auto-accept match' 0 0 100 38 'setting'; $btnAcc.IsSwitch = $true
 $btnQueue = New-Btn 'Lobby after login' 0 0 100 38 'setting'
 $btnUggA  = New-Btn 'Open u.gg for my champion' 0 0 100 38 'setting'; $btnUggA.IsSwitch = $true
-$opts = @($btnAcc, $btnQueue, $btnUggA)
+$btnAutoX = New-Btn 'Exit routine when League closes' 0 0 100 38 'setting'; $btnAutoX.IsSwitch = $true
+$opts = @($btnAcc, $btnQueue, $btnUggA, $btnAutoX)
 $form.Controls.AddRange($opts)
 function Show-Opts {
-  $btnAcc.On = [bool](Get-MiseSetting $script:cfg 'autoAccept'); $btnUggA.On = [bool](Get-MiseSetting $script:cfg 'champPage')
+  $btnAcc.On = [bool](Get-MiseSetting $script:cfg 'autoAccept'); $btnUggA.On = [bool](Get-MiseSetting $script:cfg 'champPage'); $btnAutoX.On = [bool](Get-MiseSetting $script:cfg 'autoExit')
   $q = [int](Get-MiseSetting $script:cfg 'queue'); $qn = ($script:QueueList | Where-Object { $_.Id -eq $q } | Select-Object -First 1).Name
   $btnQueue.Chip = $(if ($qn) { $qn } else { "Queue $q" })
   foreach ($b in $opts) { $b.Invalidate() }
 }
 $btnAcc.Add_Click({ $script:cfg = Set-MiseSetting 'autoAccept' (-not [bool](Get-MiseSetting $script:cfg 'autoAccept')); Show-Opts })
+$btnAutoX.Add_Click({ $script:cfg = Set-MiseSetting 'autoExit' (-not [bool](Get-MiseSetting $script:cfg 'autoExit')); Show-Opts })
 $btnUggA.Add_Click({ $script:cfg = Set-MiseSetting 'champPage' (-not [bool](Get-MiseSetting $script:cfg 'champPage')); Show-Opts })
 # gear: settings (look, quiet mode, pop-up, window spot, updates, troubleshooting, about)
 $btnGear.Add_Click({
@@ -175,6 +222,7 @@ $btnGear.Add_Click({
     'screens' { $form.TopMost = $false; $c = Show-MonitorWizard (Get-MiseConfig); Save-MiseConfig $c; $script:cfg = $c; Set-HomeTop; return }
     'startover' { $form.TopMost = $false; if (Invoke-StartOver) { $form.Close() } else { Set-HomeTop }; return }
     'reset' { Reset-Mise; return }
+    'uninstall' { $form.TopMost = $false; if (Invoke-MiseUninstall) { $form.Close() } else { Set-HomeTop }; return }
     'about' { $form.TopMost = $false; Show-MiseAbout; Set-HomeTop }
     'feedback' { $form.TopMost = $false; Show-MiseFeedback; Set-HomeTop }
   }
@@ -182,6 +230,7 @@ $btnGear.Add_Click({
 })
 $tip.SetToolTip($btnAcc, 'Accept the ready-check just before its timer ends')
 $tip.SetToolTip($btnQueue, 'Click to pick a lobby')
+$tip.SetToolTip($btnAutoX, 'When the League client has been closed for about a minute, the running routine exits by itself')
 
 # lobby picker: a short scroll list that drops down inside the window (mouse wheel scrolls), one choice
 $qList = New-Object Windows.Forms.Panel; $qList.BackColor = $script:C.Line; $qList.Visible = $false
@@ -194,11 +243,10 @@ function Move-QueueList($dy) {
   $y = [Math]::Min(0, [Math]::Max(-$max, $qInner.Top + $dy)); $qInner.Top = $y
   if ($max -gt 0) { $qBar.Visible = $true; $bh = [Math]::Max(24, [int]($qView.Height * $qView.Height / $qInner.Height)); $qBar.Height = $bh; $qBar.Top = [int]((-$y / $max) * ($qView.Height - $bh)); $qBar.BringToFront() } else { $qBar.Visible = $false }
 }
-$qGrow = New-Object Windows.Forms.Timer; $qGrow.Interval = 15
-$qGrow.Add_Tick({ $d = $script:qVis - $qList.Height; if ($d -le 2) { $qList.Height = $script:qVis; $qView.Height = $script:qVis - 2; $qGrow.Stop(); Move-QueueList 0 } else { $qList.Height = $qList.Height + [int][Math]::Ceiling($d * 0.3); $qView.Height = $qList.Height - 2 } })
-function Hide-QueueList { $qGrow.Stop(); $qList.Visible = $false }
+$script:qOpen = $false
+function Hide-QueueList { if (-not $script:qOpen) { return }; $script:qOpen = $false; $qList.Visible = $false; Do-Layout }
 function Show-QueueList {
-  if ($qList.Visible) { Hide-QueueList; return }
+  if ($script:qOpen) { Hide-QueueList; return }
   $cur = [int](Get-MiseSetting $script:cfg 'queue')
   $routesNo = @(); try { $rf = Join-Path $store '_routes.json'; if (Test-Path $rf) { $routesNo = @((Get-Content -LiteralPath $rf -Raw | ConvertFrom-Json).no | ForEach-Object { [int]$_ }) } } catch {}
   $cw = $btnQueue.Width; $qInner.Controls.Clear(); $y = 0
@@ -224,20 +272,19 @@ function Show-QueueList {
   }
   $qInner.Size = New-Object Drawing.Size(($cw - 2), $y); $qInner.Top = 0
   $script:qVis = [Math]::Min($script:QueueList.Count, $qShow) * $qRow + 2
-  $top = $btnQueue.Bottom + 2
-  if ($top + $script:qVis -gt $form.ClientSize.Height - 6) { $top = $btnQueue.Top - $script:qVis - 2 }
-  $hh = $(if ($script:Animate) { 6 } else { $script:qVis })
-  $qList.Bounds = New-Object Drawing.Rectangle($btnQueue.Left, $top, $cw, $hh)
-  $qView.SetBounds(1, 1, ($cw - 2), ($hh - 2)); $qBar.Left = $cw - 7
-  $qList.BringToFront(); $qList.Visible = $true
+  # the list sits in the layout right under its row: the rows below move down, nothing is covered
+  $qList.Size = New-Object Drawing.Size($cw, $script:qVis)
+  $qView.SetBounds(1, 1, ($cw - 2), ($script:qVis - 2)); $qBar.Left = $cw - 7
+  $script:qOpen = $true; $qList.Visible = $true; Do-Layout
+  $qInner.Top = 0
   for ($i = 0; $i -lt $script:QueueList.Count; $i++) { if ($script:QueueList[$i].Id -eq $cur) { Move-QueueList (-([Math]::Max(0, $i - 2) * $qRow)); break } }
-  if ($script:Animate) { $qGrow.Start() } else { Move-QueueList 0 }
+  Move-QueueList 0
 }
 $qList.Add_MouseWheel({ param($s, $e) Move-QueueList ([int]($e.Delta / 120) * $qRow) })
 $form.Controls.Add($qList)
 # lobby after login: opens the list of lobbies
 $btnQueue.Add_Click({ Show-QueueList })
-$form.Add_MouseDown({ if ($qList.Visible) { Hide-QueueList } })
+$form.Add_MouseDown({ Hide-QueueList })
 
 # ---------- footer ----------
 $btnExitR = New-Btn 'Exit routine' 0 0 100 30 'ghost'
@@ -257,6 +304,8 @@ function Set-FormHeight($h) {
   if ($script:hTarget -eq $h) { return }
   $firstSet = ($script:hTarget -eq 0); $script:hTarget = $h
   $form.ClientSize = New-Object Drawing.Size($W, $h)   # instant: resizing a window frame by frame looks choppy
+  # grown past the bottom of its screen (lobby list opened low on the screen): slide up so everything stays visible
+  if ($form.Visible) { try { $wa = [Windows.Forms.Screen]::FromControl($form).WorkingArea; if ($form.Bottom -gt $wa.Bottom - 4) { $form.Top = [Math]::Max($wa.Top + 4, $wa.Bottom - 4 - $form.Height) } } catch {} }
 }
 function Do-Layout {
   $cw = $W - 2 * $M; $y = 74
@@ -276,7 +325,12 @@ function Do-Layout {
   $y += 34 + 16
   if ($optOn) {
     $secOpt.Location = New-Object Drawing.Point($M, $y); $optCaret.Location = New-Object Drawing.Point(($M + $secOpt.PreferredWidth + 4), ($y + 1)); $y += 20
-    if ($script:optsOpen) { foreach ($b in $opts) { $b.Size = New-Object Drawing.Size($cw, 38); $b.Location = New-Object Drawing.Point($M, $y); $y += 38 + 6 } } else { $y += 2 }
+    if ($script:optsOpen) {
+      foreach ($b in $opts) {
+        $b.Size = New-Object Drawing.Size($cw, 38); $b.Location = New-Object Drawing.Point($M, $y); $y += 38 + 6
+        if ($script:qOpen -and [object]::ReferenceEquals($b, $btnQueue)) { $qList.Location = New-Object Drawing.Point($M, ($y - 4)); $y += $script:qVis + 2 }
+      }
+    } else { $y += 2 }
     $y += 4
   }
   $optCaret.Visible = $optOn
@@ -382,7 +436,7 @@ function Restart-Home {
 # ---------- keys ----------
 $form.Add_KeyDown({
   $k = $_.KeyCode.ToString()
-  if ($k -eq 'Escape') { if ($qList.Visible) { Hide-QueueList } else { $form.Close() }; return }
+  if ($k -eq 'Escape') { if ($script:qOpen) { Hide-QueueList } else { $form.Close() }; return }
 })
 
 Show-Opts

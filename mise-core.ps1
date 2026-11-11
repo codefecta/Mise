@@ -1,6 +1,6 @@
 ﻿# Mise (shared edition) - core library. Dot-sourced by the runner, the tray and the builder.
 # Everything the routines can do lives here, driven by a JSON config:  %APPDATA%\Mise\config.json
-$script:MiseVersion = '0.6.4'
+$script:MiseVersion = '0.6.5'
 # feedback goes to a Google Form (no account needed); filled in when the form exists ('' = keep entries in a local queue)
 $script:FeedbackForm = ''
 $script:FeedbackFields = @{ type = ''; message = ''; name = ''; info = '' }
@@ -24,6 +24,7 @@ $script:DefaultSettings = [ordered]@{
   updateRepo = 'codefecta/Mise'                                 # GitHub owner/repo for the update check ('' = off)
   lastUpdateCheck = ''
   introDone = $false                              # the short intro was shown once
+  autoExit = $true                                # a League routine exits by itself when the League client closes
   optsOpen = $true                                # Options section unfolded in the Mise window
 }
 function New-MiseConfig { [pscustomobject]@{ version = 4; firstRunDone = $false; monitors = @(); routines = @(); settings = [pscustomobject]$script:DefaultSettings } }

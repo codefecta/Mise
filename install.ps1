@@ -37,6 +37,11 @@ Copy-Item -LiteralPath (Join-Path $src 'modules\riot-league.ps1') -Destination (
 Remove-Item -LiteralPath (Join-Path $dst 'mise-arrange.ps1') -Force -ErrorAction SilentlyContinue   # 0.6: replaced by the builder's map
 Get-ChildItem -LiteralPath $dst -Recurse -File | Unblock-File
 $ico = Join-Path $dst 'mise.ico'
+# Windows keeps showing a cached shortcut icon when the file name stays the same: the shortcuts point at a copy named after the version
+$ver = ''; try { if ((Get-Content -LiteralPath (Join-Path $src 'mise-core.ps1') -TotalCount 12 | Out-String) -match "MiseVersion\s*=\s*'([0-9.]+)'") { $ver = $Matches[1] } } catch {}
+Get-ChildItem -LiteralPath $dst -Filter 'mise-icon-*.ico' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+$lnkIco = $ico
+if ($ver) { try { $lnkIco = Join-Path $dst "mise-icon-$ver.ico"; Copy-Item -LiteralPath $ico -Destination $lnkIco -Force } catch { $lnkIco = $ico } }
 
 # tiny launcher exe: starts Mise with no PowerShell window and shows the start animation (source: mise-launcher.cs)
 $csFile = Join-Path $src 'mise-launcher.cs'; $exe = Join-Path $dst 'Mise.exe'
@@ -46,7 +51,7 @@ if ($csc -and (Test-Path $csFile)) { & $csc /nologo /target:winexe "/win32icon:$
 
 $sh = New-Object -ComObject WScript.Shell
 function New-Lnk($path, $target, $lnkArgs, $style) {
-  $s = $sh.CreateShortcut($path); $s.TargetPath = $target; $s.Arguments = "$lnkArgs"; $s.WorkingDirectory = $dst; $s.IconLocation = "$ico,0"
+  $s = $sh.CreateShortcut($path); $s.TargetPath = $target; $s.Arguments = "$lnkArgs"; $s.WorkingDirectory = $dst; $s.IconLocation = "$lnkIco,0"
   $s.Description = 'Mise - everything in its place before you play'; if ($style) { $s.WindowStyle = $style }; $s.Save()
 }
 $editorArgs = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $dst 'mise-home.ps1')`""
@@ -54,6 +59,7 @@ $trayArgs = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `
 if ($useExe) { New-Lnk $desk $exe '' 0; New-Lnk $startM $exe '' 0 } else { New-Lnk $desk $ps $editorArgs 7; New-Lnk $startM $ps $editorArgs 7 }
 New-Lnk $startup $ps $trayArgs 7
 
+try { & "$env:WINDIR\System32\ie4uinit.exe" -show } catch {}   # refresh the icons Windows shows
 Start-Process $ps -WindowStyle Hidden -ArgumentList $trayArgs
 Write-Host ''
 Write-Host 'Done. Mise is running in the tray (near the clock); the Mise window opens on first run.'

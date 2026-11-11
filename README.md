@@ -48,11 +48,15 @@ Handy: **+ Add app or page** adds any installed app or a web page. Click a tile 
 - A routine card on the Mise window: one click starts it. The tray icon menu has the same routines. Mise first minimizes your open windows, then arranges.
 - While a routine or account switch is starting, the progress pop-up and the tray menu have **Stop**.
 - **Exit '<name>'** (shown while a routine runs; also in the tray) closes/leaves each window as you chose and brings the taskbar back.
+- While a routine is on, the tray icon shows a small play badge and its name.
+- Routine rows show small icons of the apps they open.
+- **Exit routine when League closes** (League options, on by default): a League routine exits by itself about a minute after the League client is closed.
+- **Drag** a routine or account row up or down to reorder it. The tray menu follows the same order.
 - **Re-arrange '<name>'** puts the last routine's windows back in place without starting anything.
 
 ### The other buttons
 - **League options** (when League is installed): auto-accept match, lobby after login (pick from the list), open u.gg for your champion.
-- **Gear (top right)**: look, progress pop-up corner, where the Mise window sits, check for updates, **Name screens** (after adding or moving a screen), **Fix League client** (if the client opens blank or stuck), **Restart Mise**, **Start over** (first-time setup again; League accounts stay), About.
+- **Gear (top right)**: look, progress pop-up corner, where the Mise window sits, check for updates, **Name screens** (after adding or moving a screen), **Fix League client** (if the client opens blank or stuck), **Restart Mise**, **Start over** (first-time setup again; League accounts stay), **Uninstall Mise** (routines, settings and accounts stay), About.
 - **Start animation**: opening Mise from its icon plays a short logo animation. Gear > *Animations* off skips it (and all other motion).
 - **Tray**: left-click for the menu, double-click opens Mise. It has your routines, accounts, League options, Edit routines, Restart Mise and *Quit Mise* (closes everything).
 
