@@ -65,15 +65,15 @@ function Get-SnappedMove($r, $gx, $gy, [double]$tolX, [double]$tolY) {
   return (Limit-ToMonitor $o)
 }
 # resize one edge ('l','r','t','b') to a fraction, snapping it and keeping the minimum size (fractions)
-function Get-ResizedRect($r, [string]$edge, [double]$v, $guides, [double]$tol, [double]$minW, [double]$minH) {
+function Get-ResizedRect($r, [string]$edge, [double]$v, $guides, [double]$tol, [double]$minW, [double]$minH, [double]$maxW = 1.0, [double]$maxH = 1.0) {
   $o = Copy-Rect $r
   $s = Find-Snap $v $guides $tol; if ($null -ne $s) { $v = $s }
   $v = [Math]::Min(1.0, [Math]::Max(0.0, $v))
   switch ($edge) {
-    'l' { $right = Get-Right $o; $v = [Math]::Min($v, $right - $minW); $o.x = $v; $o.w = $right - $v }
-    'r' { $v = [Math]::Max($v, $o.x + $minW); $o.w = $v - $o.x }
-    't' { $bottom = Get-Bottom $o; $v = [Math]::Min($v, $bottom - $minH); $o.y = $v; $o.h = $bottom - $v }
-    'b' { $v = [Math]::Max($v, $o.y + $minH); $o.h = $v - $o.y }
+    'l' { $right = Get-Right $o; $v = [Math]::Max([Math]::Min($v, $right - $minW), $right - $maxW); $o.x = $v; $o.w = $right - $v }
+    'r' { $v = [Math]::Min([Math]::Max($v, $o.x + $minW), $o.x + $maxW); $o.w = $v - $o.x }
+    't' { $bottom = Get-Bottom $o; $v = [Math]::Max([Math]::Min($v, $bottom - $minH), $bottom - $maxH); $o.y = $v; $o.h = $bottom - $v }
+    'b' { $v = [Math]::Min([Math]::Max($v, $o.y + $minH), $o.y + $maxH); $o.h = $v - $o.y }
   }
   return $o
 }
@@ -83,13 +83,19 @@ function Get-ResizedRect($r, [string]$edge, [double]$v, $guides, [double]$tol, [
 function Get-MinFrac($tile, $mon) {
   $mw = if ($tile.minW) { [double]$tile.minW / $mon.W } else { 0.04 }
   $mh = if ($tile.minH) { [double]$tile.minH / $mon.H } else { 0.03 }
-  return @{ w = [Math]::Min(1.0, $mw); h = [Math]::Min(1.0, $mh) }
+  # the largest size the app accepts (the Spotify mini player has one); none = the whole screen
+  $xw = 1.0; $xh = 1.0
+  try { if ($tile.maxW -and [double]$tile.maxW -gt 0) { $xw = [Math]::Max([Math]::Min(1.0, $mw), [Math]::Min(1.0, [double]$tile.maxW / $mon.W)) } } catch {}
+  try { if ($tile.maxH -and [double]$tile.maxH -gt 0) { $xh = [Math]::Max([Math]::Min(1.0, $mh), [Math]::Min(1.0, [double]$tile.maxH / $mon.H)) } } catch {}
+  return @{ w = [Math]::Min(1.0, $mw); h = [Math]::Min(1.0, $mh); xw = $xw; xh = $xh }
 }
 # grow a rect to the minimum size, keeping its top-left where it fits
 function Set-MinSize($r, $min) {
   $o = Copy-Rect $r
   if ($o.w -lt $min.w) { $o.w = $min.w }
   if ($o.h -lt $min.h) { $o.h = $min.h }
+  if ($null -ne $min.xw -and $o.w -gt $min.xw) { $o.w = $min.xw }
+  if ($null -ne $min.xh -and $o.h -gt $min.xh) { $o.h = $min.xh }
   return (Limit-ToMonitor $o)
 }
 
@@ -180,8 +186,9 @@ function Get-SharedEdges($tiles, [double]$tol = 0.002) {
 function Move-SharedEdge($tiles, $edge, [double]$v, $mon) {
   $byId = @{}; foreach ($t in $tiles) { $byId[$t.id] = $t }
   $lo = 0.0; $hi = 1.0
-  foreach ($id in $edge.before) { $t = $byId[$id]; $m = Get-MinFrac $t $mon; $lo = [Math]::Max($lo, $(if ($edge.axis -eq 'x') { $t.rect.x + $m.w } else { $t.rect.y + $m.h })) }
+  foreach ($id in $edge.before) { $t = $byId[$id]; $m = Get-MinFrac $t $mon; $lo = [Math]::Max($lo, $(if ($edge.axis -eq 'x') { $t.rect.x + $m.w } else { $t.rect.y + $m.h })); $hi = [Math]::Min($hi, $(if ($edge.axis -eq 'x') { $t.rect.x + $m.xw } else { $t.rect.y + $m.xh })) }
   foreach ($id in $edge.after) { $t = $byId[$id]; $m = Get-MinFrac $t $mon; $hi = [Math]::Min($hi, $(if ($edge.axis -eq 'x') { (Get-Right $t.rect) - $m.w } else { (Get-Bottom $t.rect) - $m.h })) }
+  foreach ($id in $edge.after) { $t = $byId[$id]; $m = Get-MinFrac $t $mon; $lo = [Math]::Max($lo, $(if ($edge.axis -eq 'x') { (Get-Right $t.rect) - $m.xw } else { (Get-Bottom $t.rect) - $m.xh })) }
   if ($lo -gt $hi) { return $edge.pos }
   $v = [Math]::Min($hi, [Math]::Max($lo, $v))
   foreach ($id in $edge.before) { $r = $byId[$id].rect; if ($edge.axis -eq 'x') { $r.w = $v - $r.x } else { $r.h = $v - $r.y } }

@@ -549,15 +549,38 @@ function Test-InGame { [bool](Get-Process -Name 'League of Legends' -ErrorAction
 # The Riot Client window sometimes sits on the League page with the Play button not pressed
 # (launch requests are ignored). Click League in the side bar, then Play.
 # ask Riot Client itself to launch League (the same thing the Play button does) - no clicking needed
-function Riot-Launch {
+# Riot Client's local address: port and password from its lockfile ($null while it is not running)
+function Get-RiotLock {
   $lf = "$env:LOCALAPPDATA\Riot Games\Riot Client\Config\lockfile"
-  if (-not (Test-Path $lf)) { return '000' }
-  try { $fs = [IO.File]::Open($lf, 'Open', 'Read', 'ReadWrite'); $sr = New-Object IO.StreamReader($fs); $t = $sr.ReadToEnd(); $sr.Close() } catch { return '000' }
+  if (-not (Test-Path $lf)) { return $null }
+  try { $fs = [IO.File]::Open($lf, 'Open', 'Read', 'ReadWrite'); $sr = New-Object IO.StreamReader($fs); $t = $sr.ReadToEnd(); $sr.Close() } catch { return $null }
   $p = $t.Trim().Split(':')
-  if ($p.Count -lt 5) { return '000' }
-  $out = @(& curl.exe -sk -m 2 -u "riot:$($p[3])" -X POST -H 'Content-Type: application/json' -d '{}' -o NUL -w '%{http_code}' "https://127.0.0.1:$($p[2])/product-launcher/v1/products/league_of_legends/patchlines/live" 2>$null)
+  if ($p.Count -lt 5) { return $null }
+  return @{ Port = $p[2]; Pass = $p[3] }
+}
+function Riot-Launch {
+  $k = Get-RiotLock; if (-not $k) { return '000' }
+  $out = @(& curl.exe -sk -m 2 -u "riot:$($k.Pass)" -X POST -H 'Content-Type: application/json' -d '{}' -o NUL -w '%{http_code}' "https://127.0.0.1:$($k.Port)/product-launcher/v1/products/league_of_legends/patchlines/live" 2>$null)
   if ($out.Count -eq 0) { return '000' }
   return "$($out[-1])".Trim()
+}
+# League being updated by Riot Client: @{ Busy; Pct } (Pct -1 = unknown), or $null when Riot Client cannot tell.
+# While it updates, Mise must not press Play (that button is the update's progress bar) or restart anything.
+function Get-LeaguePatch {
+  $k = Get-RiotLock; if (-not $k) { return $null }
+  foreach ($path in '/patch/v1/installs/league_of_legends.live/state', '/patch/v1/installs/league_of_legends.live') {
+    $raw = @(& curl.exe -sk -m 2 -u "riot:$($k.Pass)" "https://127.0.0.1:$($k.Port)$path" 2>$null) -join ''
+    if (-not $raw -or $raw -notmatch '^\s*\{') { continue }
+    try { $j = $raw | ConvertFrom-Json } catch { continue }
+    if ($j.errorCode -or $j.httpStatus) { continue }
+    $act = "$($j.action)"; if (-not $act -and $j.state) { $act = "$($j.state.action)"; if (-not $act) { $act = "$($j.state)" } }
+    $busy = ($act -match 'patch|updat|download|install|repair|verif|checking|apply') -and ($act -notmatch '^idle$|^none$')
+    $pct = -1.0
+    foreach ($v in @($j.percentPatched, $j.progress.progress, $j.progress.percent, $j.state.percentPatched)) { if ($null -ne $v -and "$v" -match '^[\d.]+$') { $pct = [double]$v; break } }
+    if ($pct -ge 0 -and $pct -le 1 -and $busy) { $pct = $pct * 100 }
+    return @{ Busy = $busy; Pct = $pct; Action = $act; UpToDate = $j.isUpToDate }
+  }
+  return $null
 }
 
 # colour of the spot where the Play button sits in the Riot Client window ($null while the window is not up)
@@ -606,9 +629,23 @@ function Click-RiotPlay {
 function Wait-Healthy {
   $t = (Get-Date).AddSeconds($startTimeout)
   $t0 = Get-Date; $whiteSince = -1; $nudge = 0; $nudgeAt = 0; $lastSeen = -99; $seenLogs = 0; $apiAt = -1; $lastTry = -99; $apiFails = 0; $retried = $false
+  $patching = $false; $patchAt = -99; $lastPct = -100.0
   while (-not (Get-Process -Name 'LeagueClientUx' -ErrorAction SilentlyContinue)) {
     if ((Get-Date) -gt $t) { Write-Host "  client did not open within $startTimeout s"; return $false }
     $el = ((Get-Date) - $t0).TotalSeconds
+    # League updating: say so, wait for it to finish (no time limit, no Play presses, no restarts), then ask for the launch again
+    if (($el - $patchAt) -ge 3) {
+      $patchAt = $el; $pt = Get-LeaguePatch
+      if ($pt -and $pt.Busy) {
+        $pc0 = $(if ($pt.Pct -ge 0) { ' {0}%' -f [int]$pt.Pct } else { '' })
+        if (-not $patching -or ($pt.Pct -ge 0 -and [Math]::Abs($pt.Pct - $lastPct) -ge 5)) { Write-Host "[League] updating$pc0 - Mise waits and does not press Play"; $lastPct = $pt.Pct }
+        $patching = $true
+      } elseif ($patching) {
+        $patching = $false; Write-Host "[League] update finished - starting League"
+        $t0 = Get-Date; $el = 0; $patchAt = 0; $apiAt = -1; $lastTry = -99; $apiFails = 0; $nudge = 0; $retried = $false
+      }
+    }
+    if ($patching) { $t = (Get-Date).AddSeconds($startTimeout); $t0 = (Get-Date).AddSeconds(-1); $patchAt = -2; Start-Sleep -Milliseconds 900; continue }
     # a Riot Client that was already running ignores the launch arguments: ask it directly (fast), click Play as a backup
     if ($apiAt -lt 0 -and $el -gt 1 -and ($el - $lastTry) -ge 2) {
       $lastTry = $el; $c = Riot-Launch

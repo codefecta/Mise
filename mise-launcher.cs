@@ -1,5 +1,5 @@
-// Mise.exe - the launcher the desktop icon, the Start menu and the tray start.
-// Starts the tray and the Mise window (PowerShell), then shows the start card: the B2 mark builds itself
+﻿// Mise.exe - the launcher the desktop icon, the Start menu and the tray start.
+// Starts the tray and the Mise window (PowerShell), then shows the start card: the G3 mark builds itself
 // (counter, then the bowls drop in, then "Mise") and fades out as the Mise window fades in.
 // Compiled once by install.ps1 with the .NET Framework csc (C# 5: no newer syntax here).
 using System; using System.Diagnostics; using System.IO; using System.Threading; using System.Text.RegularExpressions;
@@ -25,8 +25,7 @@ class MiseLauncher {
     try { txt = File.ReadAllText(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Mise\\config.json")); } catch { return; }
     if (Regex.IsMatch(txt, "\"animations\"\\s*:\\s*false")) return;
     Color accent = Color.FromArgb(216, 137, 90);
-    Match am = Regex.Match(txt, "\"accent\"\\s*:\\s*\"#([0-9A-Fa-f]{6})\"");
-    if (am.Success) { try { accent = ColorTranslator.FromHtml("#" + am.Groups[1].Value); } catch { } }
+    // the logo is copper in every look and with every accent colour
     // the screen the Mise window opens on: where it was last dragged, else the main screen
     Screen scr = Screen.PrimaryScreen;
     Match hp = Regex.Match(txt, "\"homePos\"\\s*:\\s*\"(\\w+)\""), hx = Regex.Match(txt, "\"homeX\"\\s*:\\s*(-?\\d+)"), hy = Regex.Match(txt, "\"homeY\"\\s*:\\s*(-?\\d+)");
@@ -97,7 +96,13 @@ class MiseStartCard : Form {
     float k = 120f * s / 108f;
     GraphicsState st = g.Save();
     g.TranslateTransform(28f * s - 10f * k, 26f * s - 20f * k); g.ScaleTransform(k, k);
-    float[] x1 = { 88.5f, 58f, 15f }; float[] yy = { 67.5f, 61f, 54f }; float[] rr = { 12.5f, 19f, 26f }; float[] baseA = { 0.5f, 0.74f, 1f };
+    // a warm glow behind the bowls, then the bowls (lit from above) and the counter, at 110 % like the logo
+    using (GraphicsPath gl = new GraphicsPath()) {
+      gl.AddEllipse(-6f, -6f, 140f, 140f);
+      using (PathGradientBrush gb = new PathGradientBrush(gl)) { gb.CenterPoint = new PointF(56f, 62f); gb.CenterColor = Color.FromArgb((int)(50 * Ease(Span(el, 100, 500))), accent); gb.SurroundColors = new Color[] { Color.FromArgb(0, accent) }; g.FillPath(gb, gl); }
+    }
+    g.TranslateTransform(64f, 70f); g.ScaleTransform(1.1f, 1.1f); g.TranslateTransform(-64f, -70f);
+    float[] x1 = { 88.5f, 58f, 15f }; float[] yy = { 67.5f, 61f, 54f }; float[] rr = { 12.5f, 19f, 26f }; float[] baseA = { 0.6f, 0.85f, 1f };
     int[] start = { 600, 450, 300 };
     for (int i = 0; i < 3; i++) {
       float kk = Span(el, start[i], start[i] + 320); if (kk <= 0f) continue;
@@ -105,14 +110,14 @@ class MiseStartCard : Form {
       float y = yy[i] - Drop(kk);
       using (GraphicsPath p = HalfDisc(x1[i], y, rr[i])) {
         if (i > 0) using (SolidBrush gb = new SolidBrush(CardC)) using (Pen gp = new Pen(CardC, 5f)) { gp.LineJoin = LineJoin.Round; g.FillPath(gb, p); g.DrawPath(gp, p); }
-        using (SolidBrush b = new SolidBrush(Color.FromArgb((int)(255 * a), accent))) g.FillPath(b, p);
+        using (LinearGradientBrush b = new LinearGradientBrush(new RectangleF(x1[i], y - 0.5f, 2 * rr[i], rr[i] + 1f), Color.FromArgb((int)(255 * a), 0xE9, 0xA1, 0x74), Color.FromArgb((int)(255 * a), 0xB8, 0x6D, 0x43), 90f)) g.FillPath(b, p);
       }
     }
     float ck = Ease(Span(el, 150, 450));
     if (ck > 0.01f) {
-      using (GraphicsPath c = RoundRect(10f, 81f, Math.Max(7f, 108f * ck), 7f, 3.5f)) {
+      using (GraphicsPath c = RoundRect(10f, 80f, Math.Max(10f, 108f * ck), 10f, 5f)) {
         using (SolidBrush gb = new SolidBrush(CardC)) using (Pen gp = new Pen(CardC, 5f)) { gp.LineJoin = LineJoin.Round; g.FillPath(gb, c); g.DrawPath(gp, c); }
-        using (SolidBrush cb = new SolidBrush(Color.FromArgb(128, accent))) g.FillPath(cb, c);
+        using (SolidBrush cb = new SolidBrush(Color.FromArgb(153, accent))) g.FillPath(cb, c);
       }
     }
     g.Restore(st);

@@ -1,4 +1,4 @@
-# Mise
+﻿# Mise
 
 Everything in its place before you play. Mise switches League accounts in one click and sets up your windows (League, u.gg, Discord, Spotify...) with one button.
 
@@ -18,7 +18,7 @@ Press **+ Account** (under Tools). It walks you through three steps:
 Press *Add another account* for the next one, or **Done**.
 
 Signing out of Riot Client by hand cancels the saved login, so don't.
-Later, one click on an account logs in or switches. The **...** on an account (or right-click): **Update saved login** (if Riot rejects it) or remove.
+Later, one click on an account logs in or switches. The **...** on an account (or right-click): **Update saved login** (if Riot rejects it), remove, **Lobby for this account** (its own lobby instead of Lobby after login) and **Routine for this account** (starts with it; a League routine then does the login). The row shows what the account has set.
 
 ### 3. Make a routine
 A routine is a layout of windows plus what starts and what closes.
@@ -37,16 +37,23 @@ Handy: **+ Add app or page** adds any installed app or a web page. Click a tile 
 - **Spotify mini player**: switch on *Mini player* in the tile (the tile shrinks to mini size).
 - **League client**: position only.
 - **Web page**: *Clean window* hides the address bar and tabs.
-- **A friend's Discord stream**: type their Discord display name. While the routine runs and League is open, when they stream in your voice channel Mise opens the stream, pops it out and puts it on this tile (be in the voice channel, Discord open).
+- **A friend's Discord stream**: type their Discord display name. While the routine runs, when they stream in your voice channel Mise opens the stream, pops it out (stream only, no member strip) and puts it on this tile. In a League routine it waits until League is open. Be in the voice channel with Discord open. Exiting the routine closes the popout. Drag or resize the stream tile in Edit routines to set where the popout goes. Mise only acts while you are in a voice call and never joins a channel for you.
 - **Pop-up spot on the map** (routine setting): switch it on and place the small progress box where you want it while this routine runs. Off: the corner from Settings.
 
 ### Routine settings
 - **Log in to League**: starting the routine asks which account, logs in and opens your lobby first, and arranges everything else while League loads.
+- **Quick size**: right-click a tile > Quick size: full screen, halves, thirds or quarters in one click.
+- **Undo**: Ctrl+Z (or the Undo button, which shows how many steps there are) takes back the last change on the map; the map says what was undone.
+- **Spotify mini player**: its tile only takes sizes the mini player really allows (Mise reads them from the mini player when it is open).
 - **Hotkey**: click it, press Ctrl or Alt plus a key (Backspace clears it).
+- **Start with a program**: pick a program (for example your game); when it opens, this routine starts by itself. Open the program first to pick it from the list, or type its name.
 
 ### Running things
 - A routine card on the Mise window: one click starts it. The tray icon menu has the same routines. Mise first minimizes your open windows, then arranges.
 - While a routine or account switch is starting, the progress pop-up and the tray menu have **Stop**.
+- Starting a routine while another one is on switches: the old one exits first (windows both use stay put), then the new one starts.
+- **Progress pop-up**: a slim pill (what is happening, how many apps are ready, a ring) that fades out 3 s after it is done. Point at it to unfold the step list: each step with the second it happened, the one running now pulses. It unfolds by itself when something needs a look or League is updating. A problem row has a **Fix** button: click it for what went wrong and the one action that fixes it (Re-arrange now, Edit routines, Fix League client...). **Stop** and **Hide** sit at its bottom.
+- **League updating**: when Riot Client is updating League, Mise says so in the pop-up (with the percentage), waits for it and does not press Play or restart anything; League starts when the update is done.
 - **Exit '<name>'** (shown while a routine runs; also in the tray) closes/leaves each window as you chose and brings the taskbar back.
 - While a routine is on, the tray icon shows a small play badge and its name.
 - Routine rows show small icons of the apps they open.
@@ -56,9 +63,9 @@ Handy: **+ Add app or page** adds any installed app or a web page. Click a tile 
 
 ### The other buttons
 - **League options** (when League is installed): auto-accept match, lobby after login (pick from the list), open u.gg for your champion.
-- **Gear (top right)**: look, progress pop-up corner, where the Mise window sits, check for updates, **Name screens** (after adding or moving a screen), **Fix League client** (if the client opens blank or stuck), **Restart Mise**, **Start over** (first-time setup again; League accounts stay), **Uninstall Mise** (routines, settings and accounts stay), About.
-- **Start animation**: opening Mise from its icon plays a short logo animation. Gear > *Animations* off skips it (and all other motion).
-- **Tray**: left-click for the menu, double-click opens Mise. It has your routines, accounts, League options, Edit routines, Restart Mise and *Quit Mise* (closes everything).
+- **Gear (top right)**: **Look** (Ember, or one of five glass looks: Midnight Glass, Aurora, Ember Glass, Deep Sea, Nebula; the logo stays copper in all of them), accent colour, progress pop-up corner, where the Mise window sits, check for updates, **Rename screens** (Mise names screens by itself, e.g. "Main - MAG 274Q X24"; a newly plugged-in screen is named automatically), **Fix League client** (if the client opens blank or stuck), **Restart Mise**, **Start over** (first-time setup again; League accounts stay), **Uninstall Mise** (routines, settings and accounts stay), About.
+- **Motion**: opening Mise plays a short logo animation, the window rises in and the rows slide in. Rows lift a little under the mouse (a play button slides in on routines), switches spring, and when you click another account the copper frame glides over to it with a "switching..." line. In Edit routines a dragged tile lifts with a shadow, leaves a faint ghost where it came from, shows copper guide lines when its edges line up with another tile and settles with a small bounce ("snapped"). Gear > *Animations* off turns all motion off.
+- **Tray**: left-click for the menu, double-click opens Mise. A compact menu in the current look: on top what is running with its **Exit** (or **Stop** while it starts), Open Mise, **Re-arrange** your last routine, the update when one is ready, your routines with their hotkeys, Switch account (the logged-in account has a check), Edit routines, Restart Mise and *Quit Mise* (closes everything). The League options live in the Mise window.
 
 ### If something looks wrong
 - A window won't move or is too small: apps have a smallest size, tiles stop at it.

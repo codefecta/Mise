@@ -13,6 +13,7 @@ if (-not $first) { exit }
 
 $script:cfg = Get-MiseConfig
 if (-not $script:cfg.firstRunDone) { $script:cfg = Show-FirstRun $script:cfg }
+try { $ua = Update-AutoMonitors $script:cfg; if ($ua.Added) { Save-MiseConfig $ua.Cfg; $script:cfg = $ua.Cfg } } catch {}
 $script:browser = Get-DefaultBrowser
 $script:R = $null            # the routine being edited (a working copy)
 $script:dirty = $false
@@ -34,12 +35,18 @@ function New-BlankRoutine {
 }
 function Get-Tiles { return @($script:R.tiles) }
 function Get-Tile([string]$id) { return (@($script:R.tiles) | Where-Object { $_.id -eq $id } | Select-Object -First 1) }
-function Save-UndoPoint { Push-Undo $script:undo @{ tiles = @($script:R.tiles); card = $script:R.card; taskbar = @($script:R.taskbar) } }
+function Save-UndoPoint { Push-Undo $script:undo @{ tiles = @($script:R.tiles); card = $script:R.card; taskbar = @($script:R.taskbar) }; Update-UndoButton }
 function Restore-Undo {
-  $s = Pop-Undo $script:undo; if (-not $s) { return }
+  $s = Pop-Undo $script:undo
+  # say what happened on the map, so Ctrl+Z is never a silent key
+  if (-not $s) { $script:helper = 'Nothing more to undo.'; Update-UndoButton; $canvas.Invalidate(); return }
   $script:R.tiles = @($s.tiles | Where-Object { $_ }); $script:R.card = $s.card; $script:R.taskbar = @($s.taskbar | Where-Object { $_ })
-  $script:dirty = $true; $script:helper = ''; Update-Side; $canvas.Invalidate()
+  $n = @($script:undo.Items).Count
+  $script:dirty = $true; $script:helper = $(if ($n) { "Undone. Ctrl+Z again goes $n more step$(if ($n -ne 1) { 's' }) back." } else { 'Undone. That was the last change.' })
+  Update-UndoButton; Update-Side; $canvas.Invalidate()
 }
+# the Undo button shows its shortcut and how many steps there are; greyed out with nothing to undo
+function Update-UndoButton { try { $n = @($script:undo.Items).Count; $bUndo.Text = $(if ($n) { "Undo ($n)  Ctrl+Z" } else { 'Undo  Ctrl+Z' }); $bUndo.Enabled = ($n -gt 0); $bUndo.Invalidate() } catch {} }
 function Set-Dirty { $script:dirty = $true; $script:marks = @{}; $script:checks = @() }
 # a Mise-styled yes/no (no grey Windows boxes)
 function Show-MiseAsk([string]$title, [string]$text, [string]$yes, [string]$no) {
@@ -77,6 +84,7 @@ $wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $form.ClientSize = New-Object Drawing.Size([Math]::Max(1240, [int]($wa.Width * 0.8)), [Math]::Max(760, [int]($wa.Height * 0.82))); $form.MinimumSize = New-Object Drawing.Size(1000, 640)
 if (Test-Path $script:Icon) { try { $form.Icon = New-Object Drawing.Icon($script:Icon) } catch {} }
 $form.BackColor = $script:C.Bg; $form.ForeColor = $script:C.Text
+Set-MiseBackdrop $form; Set-MiseAppId $form
 $form.Add_HandleCreated({ param($s, $e) try { $v = 2; [MiseUi]::DwmSetWindowAttribute($s.Handle, 33, [ref]$v, 4) | Out-Null; $v = 1; [MiseUi]::DwmSetWindowAttribute($s.Handle, 20, [ref]$v, 4) | Out-Null } catch {} })
 $tip = New-Object Windows.Forms.ToolTip
 
@@ -88,7 +96,7 @@ $nameBox = New-MiseText 266 18 240; $form.Controls.Add($nameBox.Panel)
 $nameBox.Box.Add_TextChanged({ if ($script:R -and $nameBox.Box.Text -ne $script:R.name) { $script:R.name = $nameBox.Box.Text; $script:dirty = $true; Update-List } })
 $bCopy = New-Btn 'Copy my screen' 0 16 150 34 'primary'
 $bAdd = New-Btn '+ Add app or page' 0 16 150 34
-$bUndo = New-Btn 'Undo' 0 16 80 34
+$bUndo = New-Btn 'Undo  Ctrl+Z' 0 16 138 34
 $bTest = New-Btn 'Test run' 0 16 100 34
 $bSave = New-Btn 'Save' 0 16 80 34 'primary'
 $bSaveC = New-Btn 'Save and close' 0 16 130 34
@@ -106,7 +114,7 @@ $bHome = New-Btn 'Back to Mise' 18 0 200 30 'ghost'
 $form.Controls.AddRange(@($bNewR, $bHome))
 
 # centre: the map
-$canvas = New-Object Windows.Forms.Panel; $canvas.BackColor = [Drawing.Color]::FromArgb(18, 18, 21)
+$canvas = New-Object Windows.Forms.Panel; $canvas.BackColor = $(if ($script:C.Glass) { $b0 = $script:C.Bg; [Drawing.Color]::FromArgb([Math]::Max(0, $b0.R - 3), [Math]::Max(0, $b0.G - 3), [Math]::Max(0, $b0.B - 3)) } else { [Drawing.Color]::FromArgb(18, 18, 21) })
 [Windows.Forms.Control].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'NonPublic,Instance').SetValue($canvas, $true, $null)
 $form.Controls.Add($canvas)
 
@@ -176,10 +184,33 @@ function Open-Routine([string]$id) {
   if (-not $r) { return }
   Set-Routine (Copy-Routine $r)
 }
+# the Spotify mini player's real smallest and largest size, read once from it when it is open (it is always on top)
+$script:miniLimits = $null
+function Get-MiniLimits {
+  if ($null -ne $script:miniLimits) { return $script:miniLimits }
+  $script:miniLimits = $false
+  try {
+    $mw = Get-WinSnapshot | Where-Object { (Get-ProcName $_.Pid) -eq 'Spotify' -and [MiseWin]::IsTopmost($_.H) } | Select-Object -First 1
+    if ($mw) { $mn = [MiseWin2]::ProbeMinSize($mw.H); $mx = [MiseWin2]::ProbeMaxSize($mw.H); if ($mn -and $mx) { $script:miniLimits = @{ MinW = $mn[0]; MinH = $mn[1]; MaxW = $mx[0]; MaxH = $mx[1] } } }
+  } catch {}
+  return $script:miniLimits
+}
 function Set-Routine($r) {
   $script:R = $r
   foreach ($k in @('tiles', 'taskbar')) { $script:R.$k = @($script:R.$k | Where-Object { $_ }) }
+  # mini player tiles saved before Mise knew its limits get them now (and are shrunk or grown to fit)
+  foreach ($t in @($script:R.tiles)) {
+    if ($t.kind -eq 'spotify' -and $t.mini -and -not $t.maxW) {
+      $ml = Get-MiniLimits
+      if ($ml) {
+        foreach ($kv in @(@('minW', $ml.MinW), @('minH', $ml.MinH), @('maxW', $ml.MaxW), @('maxH', $ml.MaxH))) { $t | Add-Member -NotePropertyName $kv[0] -NotePropertyValue $kv[1] -Force }
+        $mon = @(Get-LiveMonitors $script:cfg) | Where-Object { $_.id -eq $t.monitor } | Select-Object -First 1
+        if ($mon) { $t.rect = Set-MinSize $t.rect (Get-MinFrac $t (Get-TileArea $mon $script:R)); $script:dirty = $true }
+      }
+    }
+  }
   $script:dirty = $false; $script:sel = ''; $script:undo = New-UndoStack; $script:marks = @{}; $script:checks = @(); $script:helper = ''
+  Update-UndoButton
   $nameBox.Box.Text = $script:R.name
   Update-List; Update-Side; $canvas.Invalidate()
 }
@@ -268,18 +299,43 @@ function Get-Hit($pt) {
 }
 
 # ======================= drawing =======================
+function New-RoundPath($r, [double]$rad) {
+  $p = New-Object Drawing.Drawing2D.GraphicsPath
+  $d = [single]([Math]::Max(0.5, $rad * 2))
+  if ($rad -lt 0.5) { $p.AddRectangle($r); return $p }
+  $p.AddArc($r.X, $r.Y, $d, $d, 180, 90); $p.AddArc(($r.Right - $d), $r.Y, $d, $d, 270, 90)
+  $p.AddArc(($r.Right - $d), ($r.Bottom - $d), $d, $d, 0, 90); $p.AddArc($r.X, ($r.Bottom - $d), $d, $d, 90, 90); $p.CloseFigure()
+  return $p
+}
+function Get-Lighter($c, [int]$n) { return [Drawing.Color]::FromArgb([Math]::Min(255, $c.R + $n), [Math]::Min(255, $c.G + $n), [Math]::Min(255, $c.B + $n)) }
+function Get-Darker($c, [int]$n) { return [Drawing.Color]::FromArgb([Math]::Max(0, $c.R - $n), [Math]::Max(0, $c.G - $n), [Math]::Max(0, $c.B - $n)) }
+# a stream tile's body: a play symbol and a LIVE badge (a shape and a word, not colour alone)
+function Draw-StreamBody($g, $body, $cols) {
+  if ($body.Width -lt 30 -or $body.Height -lt 24) { return }
+  $r = [single][Math]::Min(18, [Math]::Min($body.Width, $body.Height) * 0.28)
+  $cx = $body.X + $body.Width / 2; $cy = $body.Y + $body.Height / 2
+  $cb = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(70, $cols[1])); $g.FillEllipse($cb, ($cx - $r), ($cy - $r), (2 * $r), (2 * $r)); $cb.Dispose()
+  $tri = [Drawing.PointF[]]@((New-Object Drawing.PointF(($cx - $r * 0.35), ($cy - $r * 0.5))), (New-Object Drawing.PointF(($cx - $r * 0.35), ($cy + $r * 0.5))), (New-Object Drawing.PointF(($cx + $r * 0.55), $cy)))
+  $tb = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(235, 236, 255)); $g.FillPolygon($tb, $tri); $tb.Dispose()
+  if ($body.Width -ge 70 -and $body.Height -ge 40) {
+    $lr = New-Object Drawing.RectangleF(($body.Right - 38), ($body.Y + 5), 32, 15)
+    $lp = New-RoundPath $lr 4; $lb = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(214, 54, 56)); $g.FillPath($lb, $lp); $lb.Dispose(); $lp.Dispose()
+    $sf = New-Object Drawing.StringFormat; $sf.Alignment = 'Center'; $sf.LineAlignment = 'Center'
+    $wb = New-Object Drawing.SolidBrush([Drawing.Color]::White); $g.DrawString('LIVE', $script:fTiny, $wb, $lr, $sf); $wb.Dispose(); $sf.Dispose()
+  }
+}
 $script:KindColors = @{
   app = @([Drawing.Color]::FromArgb(51, 48, 74), [Drawing.Color]::FromArgb(140, 134, 200)); web = @([Drawing.Color]::FromArgb(43, 58, 74), [Drawing.Color]::FromArgb(110, 143, 176))
   ugg = @([Drawing.Color]::FromArgb(43, 58, 74), [Drawing.Color]::FromArgb(110, 143, 176)); spotify = @([Drawing.Color]::FromArgb(36, 64, 47), [Drawing.Color]::FromArgb(111, 174, 134))
   league = @([Drawing.Color]::FromArgb(58, 44, 34), [Drawing.Color]::FromArgb(200, 134, 90))
-  stream = @([Drawing.Color]::FromArgb(44, 46, 78), [Drawing.Color]::FromArgb(120, 130, 230))
+  stream = @([Drawing.Color]::FromArgb(46, 49, 92), [Drawing.Color]::FromArgb(116, 127, 236))
 }
 $canvas.Add_Paint({
   param($s, $e)
   $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'; $g.TextRenderingHint = 'ClearTypeGridFit'
   $script:view = @(Get-View)
   $muted = New-Object Drawing.SolidBrush($script:C.Muted); $text = New-Object Drawing.SolidBrush($script:C.Text); $acc = New-Object Drawing.SolidBrush($script:C.Accent)
-  if (-not $script:view.Count) { $g.DrawString('No named screens are connected. Use Name screens in Mise settings (gear).', $script:fSmall, $muted, 24, 24); return }
+  if (-not $script:view.Count) { $g.DrawString('No named screens are connected. Mise names them by itself; reopen this window after plugging one in.', $script:fSmall, $muted, 24, 24); return }
   foreach ($v in $script:view) {
     # screen, its header (name, taskbar, layout) and the work area
     $hy = $v.Mon.Y - $script:hdrH + 2
@@ -299,25 +355,88 @@ $canvas.Add_Paint({
     $fill = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(29, 29, 33)); $g.FillRectangle($fill, $v.Mon); $fill.Dispose()
     $pen = New-Object Drawing.Pen([Drawing.Color]::FromArgb(74, 74, 82), 1); $g.DrawRectangle($pen, $v.Mon.X, $v.Mon.Y, $v.Mon.Width, $v.Mon.Height); $pen.Dispose()
     if (-not $tbHidden) { $tb = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(38, 38, 43)); $g.FillRectangle($tb, $v.Mon.X, $v.A.Bottom, $v.Mon.Width, [Math]::Max(0, $v.Mon.Bottom - $v.A.Bottom)); $tb.Dispose() }
-    # tiles
+    # tiles: each one drawn like a small window - a title bar with the app's icon and name, a body in the kind's colour
+    # dragging a tile: a faint ghost stays where it came from
+    $dg = $script:drag
+    if ($dg -and $dg.Mode -eq 'move' -and $dg.Orig -and $dg.OrigMon -eq $v.Live.id -and $script:Animate) {
+      $gp = New-RoundPath $dg.Orig 6; $gpen = New-Object Drawing.Pen([Drawing.Color]::FromArgb(130, $script:C.Accent), 1.4); $gpen.DashStyle = 'Dash'; $g.DrawPath($gpen, $gp); $gpen.Dispose(); $gp.Dispose()
+    }
     foreach ($t in @(Get-Tiles | Where-Object { $_.monitor -eq $v.Live.id })) {
       $b = Get-TileBox $v $t.rect
+      if ($b.Width -lt 4 -or $b.Height -lt 4) { continue }
       $cols = $script:KindColors[$t.kind]; if (-not $cols) { $cols = $script:KindColors.app }
-      $fb = New-Object Drawing.SolidBrush($cols[0]); $g.FillRectangle($fb, $b); $fb.Dispose()
-      $isSel = ($script:sel -eq $t.id)
-      $tp = New-Object Drawing.Pen($(if ($isSel) { $script:C.Accent } else { $cols[1] }), $(if ($isSel) { 2.5 } else { 1.2 })); $g.DrawRectangle($tp, $b.X, $b.Y, $b.Width, $b.Height); $tp.Dispose()
+      # held: it lifts (a little bigger, a shadow under it); let go: it settles with a small bounce
+      $infl = 0.0; $held = ($dg -and $dg.Mode -eq 'move' -and $dg.Hit.Tile.id -eq $t.id -and $script:Animate)
+      if ($held) { $infl = 2.0 } elseif ($script:bounce -and $script:bounce.Id -eq $t.id -and -not $script:bounce.NoMove) { $bk = [Math]::Min(1.0, $script:bounce.Clock.ElapsedMilliseconds / 300.0); $infl = 2.0 * (1 - $bk) * [Math]::Cos($bk * [Math]::PI * 1.5) }
+      if ($held) { $sp = New-RoundPath (New-Object Drawing.RectangleF(($b.X + 2), ($b.Y + 7), $b.Width, $b.Height)) 7; $sb = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(110, 0, 0, 0)); $g.FillPath($sb, $sp); $sb.Dispose(); $sp.Dispose() }
+      if ($infl -ne 0) { $b = New-Object Drawing.RectangleF(([single]($b.X - $infl)), ([single]($b.Y - $infl)), ([single]($b.Width + 2 * $infl)), ([single]($b.Height + 2 * $infl))) }
+      $isSel = ($script:sel -eq $t.id); $isHot = ($script:hover -and $script:hover.Tile -and $script:hover.Tile.id -eq $t.id)
+      $rad = [Math]::Min(6.0, [Math]::Min($b.Width, $b.Height) / 4.0)
+      $path = New-RoundPath $b $rad
+      $fb = New-Object Drawing.SolidBrush($(if ($isHot -or $isSel) { Get-Lighter $cols[0] 10 } else { $cols[0] })); $g.FillPath($fb, $path); $fb.Dispose()
+      # title bar (only when the tile is tall enough to keep room for the body)
+      $barH = $(if ($b.Height -ge 46) { 20.0 } else { 0.0 })
+      $old = $g.Clip; $g.SetClip($path)
+      if ($barH) {
+        $bar = New-Object Drawing.SolidBrush((Get-Darker $cols[0] 14)); $g.FillRectangle($bar, $b.X, $b.Y, $b.Width, [single]$barH); $bar.Dispose()
+        $ln = New-Object Drawing.Pen([Drawing.Color]::FromArgb(70, $cols[1]), 1); $g.DrawLine($ln, $b.X, ($b.Y + $barH), $b.Right, ($b.Y + $barH)); $ln.Dispose()
+      }
+      $g.Clip = $old
       $label = $t.name; if ($t.kind -eq 'spotify' -and $t.mini) { $label = 'Spotify mini' }
-      $sf = New-Object Drawing.StringFormat; $sf.Alignment = 'Center'; $sf.LineAlignment = 'Center'; $sf.Trimming = 'EllipsisCharacter'
-      $g.DrawString($label, $script:fBtn, $text, $b, $sf)
+      if ($t.kind -eq 'stream') { $label = "$($t.streamer)".Trim(); if (-not $label) { $label = 'Discord stream' } }
+      $icon = $null; try { $icon = Get-TileIcon $t $script:browser } catch {}
+      $sf = New-Object Drawing.StringFormat; $sf.Trimming = 'EllipsisCharacter'; $sf.FormatFlags = 'NoWrap'; $sf.LineAlignment = 'Center'
+      if ($barH) {
+        $tx = $b.X + 6
+        if ($icon -and $b.Width -ge 60) { $g.InterpolationMode = 'HighQualityBicubic'; $g.DrawImage($icon, (New-Object Drawing.RectangleF(($b.X + 5), ($b.Y + 3), 14, 14))); $tx = $b.X + 23 }
+        $g.DrawString($label, $script:fTiny, $text, (New-Object Drawing.RectangleF($tx, $b.Y, [Math]::Max(1, $b.Right - $tx - 4), $barH)), $sf)
+        $body = New-Object Drawing.RectangleF($b.X, ($b.Y + $barH), $b.Width, ($b.Height - $barH))
+        if ($t.kind -eq 'stream') { Draw-StreamBody $g $body $cols }
+        elseif ($icon -and $body.Width -ge 60 -and $body.Height -ge 52) {
+          # the app's icon, big and faint, in the middle of the body
+          $sz = [single][Math]::Min(40, [Math]::Min($body.Width, $body.Height) * 0.45)
+          $ia = New-Object Drawing.Imaging.ImageAttributes; $cm = New-Object Drawing.Imaging.ColorMatrix; $cm.Matrix33 = 0.35; $ia.SetColorMatrix($cm)
+          $dst = New-Object Drawing.Rectangle([int]($body.X + ($body.Width - $sz) / 2), [int]($body.Y + ($body.Height - $sz) / 2), [int]$sz, [int]$sz)
+          $g.DrawImage($icon, $dst, 0, 0, $icon.Width, $icon.Height, [Drawing.GraphicsUnit]::Pixel, $ia); $ia.Dispose()
+        }
+      } else {
+        $sf.Alignment = 'Center'
+        $g.DrawString($label, $script:fTiny, $text, $b, $sf)
+      }
+      $bw = $(if ($isSel) { 2.4 } elseif ($isHot) { 1.6 } else { 1.1 })
+      $tp = New-Object Drawing.Pen($(if ($isSel) { $script:C.Accent } elseif ($isHot) { Get-Lighter $cols[1] 30 } else { $cols[1] }), $bw); $g.DrawPath($tp, $path); $tp.Dispose(); $path.Dispose()
       $mk = $script:marks[$t.id]
-      if ($mk) { $mb = New-Object Drawing.SolidBrush($(if ($mk -eq 'Passed') { $script:C.Accent } else { [Drawing.Color]::FromArgb(240, 192, 96) })); $g.DrawString($mk, $script:fTiny, $mb, ($b.X + 4), ($b.Y + 3)); $mb.Dispose() }
-      if ($t.kind -eq 'league') { $g.DrawString('size set by League', $script:fTiny, $muted, ($b.X + 4), ($b.Bottom - 16)) }
+      $my = $b.Y + $barH + 3
+      if ($mk) { $mb = New-Object Drawing.SolidBrush($(if ($mk -eq 'Passed') { $script:C.Accent } else { [Drawing.Color]::FromArgb(240, 192, 96) })); $g.DrawString($mk, $script:fTiny, $mb, ($b.X + 5), $my); $mb.Dispose() }
+      if ($script:bounce -and $script:bounce.Id -eq $t.id -and $script:bounce.Snapped -and $b.Width -ge 60 -and $b.Height -ge 34) {
+        $sa = [int](255 * [Math]::Max(0.0, 1 - $script:bounce.Clock.ElapsedMilliseconds / 700.0))
+        if ($sa -gt 0) { $snb = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb($sa, $script:C.Accent)); $g.DrawString('snapped', $script:fTiny, $snb, ($b.X + 5), ($b.Bottom - 17)); $snb.Dispose() }
+      }
+      if ($t.kind -eq 'league') { $g.DrawString('size set by League', $script:fTiny, $muted, ($b.X + 5), ($b.Bottom - 17)) }
+      elseif (($isSel -or $isHot) -and $b.Width -ge 70 -and $b.Height -ge 34) {
+        # the size the window will get, in pixels
+        $pw = [int]([double]$t.rect.w * $v.Area.W); $ph = [int]([double]$t.rect.h * $v.Area.H)
+        $rf = New-Object Drawing.StringFormat; $rf.Alignment = 'Far'
+        $g.DrawString("$pw x $ph", $script:fTiny, $muted, (New-Object Drawing.RectangleF($b.X, ($b.Bottom - 17), ($b.Width - 6), 16)), $rf); $rf.Dispose()
+      }
+      $sf.Dispose()
     }
     # the Mise tile (where the progress pop-up shows)
     if ($script:R.card -and $script:R.card.monitor -eq $v.Live.id) {
       $cb = Get-TileBox $v (Get-CardRect $v)
       $cp = New-Object Drawing.Pen($script:C.Accent, 1.5); $cp.DashStyle = 'Dash'; $g.DrawRectangle($cp, $cb.X, $cb.Y, $cb.Width, $cb.Height); $cp.Dispose()
       $g.DrawString('Mise', $script:fTiny, $acc, ($cb.X + 3), ($cb.Y + 2))
+    }
+  }
+  # while a tile is dragged or resized: copper guide lines where its edges line up with another tile
+  if ($script:drag -and $script:drag.Mode -in 'move', 'edge' -and $script:drag.Hit.Tile) {
+    $dt = $script:drag.Hit.Tile; $v = Get-ViewFor $dt.monitor
+    if ($v) {
+      $gl = Get-AlignedGuides $dt
+      $gpn = New-Object Drawing.Pen([Drawing.Color]::FromArgb(220, $script:C.Accent), 1.6)
+      foreach ($x in $gl.X) { $lx = [single]($v.A.X + $x * $v.A.Width); $g.DrawLine($gpn, $lx, $v.A.Y, $lx, $v.A.Bottom) }
+      foreach ($yv in $gl.Y) { $ly = [single]($v.A.Y + $yv * $v.A.Height); $g.DrawLine($gpn, $v.A.X, $ly, $v.A.Right, $ly) }
+      $gpn.Dispose()
     }
   }
   # the grip under the mouse: the shared line lights up with what dragging it does
@@ -336,7 +455,7 @@ $canvas.Add_Paint({
     $bp = New-Object Drawing.Pen($script:C.Accent, 1.5); $g.DrawRectangle($bp, $box.X, $box.Y, $box.Width, $box.Height); $bp.Dispose()
     $g.DrawString('Start here', $script:fBig, $acc, ($box.X + 16), ($box.Y + 12))
     $g.DrawString("1. Open your apps and put them roughly in place.`n2. Press Copy my screen.`n3. Fine-tune here on the map.", $script:fSmall, $text, (New-Object Drawing.RectangleF(($box.X + 16), ($box.Y + 44), ($box.Width - 32), 90)))
-  } elseif ($script:helper) { $g.DrawString($script:helper, $script:fSmall, $acc, 12, ($canvas.ClientSize.Height - 26)) } else { $g.DrawString('Drag an edge or a corner to resize. Right-click a tile for rename and more. Delete removes the selected tile.', $script:fSmall, $muted, 12, ($canvas.ClientSize.Height - 26)) }
+  } elseif ($script:helper) { $g.DrawString($script:helper, $script:fSmall, $acc, 12, ($canvas.ClientSize.Height - 26)) } else { $g.DrawString('Drag an edge or a corner to resize. Right-click a tile for quick sizes, rename and more. Delete removes the selected tile. Ctrl+Z undoes the last change.', $script:fSmall, $muted, 12, ($canvas.ClientSize.Height - 26)) }
   $muted.Dispose(); $text.Dispose(); $acc.Dispose()
 })
 
@@ -364,7 +483,7 @@ $canvas.Add_MouseDown({
     'layout' { Show-PresetMenu $hit.V $e.Location; return }
     'grip' { Save-UndoPoint; $script:drag = @{ Mode = 'grip'; Hit = $hit }; return }
     'edge' { Save-UndoPoint; $script:sel = $hit.Tile.id; $script:drag = @{ Mode = 'edge'; Hit = $hit }; Update-Side; return }
-    'tile' { Save-UndoPoint; $script:sel = $hit.Tile.id; $b = Get-TileBox $hit.V $hit.Tile.rect; $script:drag = @{ Mode = 'move'; Hit = $hit; Dx = $e.X - $b.X; Dy = $e.Y - $b.Y }; Update-Side; $canvas.Invalidate(); return }
+    'tile' { Save-UndoPoint; $script:sel = $hit.Tile.id; $b = Get-TileBox $hit.V $hit.Tile.rect; $script:drag = @{ Mode = 'move'; Hit = $hit; Dx = $e.X - $b.X; Dy = $e.Y - $b.Y; Orig = $b; OrigMon = $hit.Tile.monitor; Moved = $false }; Update-Side; $canvas.Invalidate(); return }
     'card' { Save-UndoPoint; $script:sel = 'card'; $b = Get-TileBox $hit.V (Get-CardRect $hit.V); $script:drag = @{ Mode = 'card'; Hit = $hit; Dx = $e.X - $b.X; Dy = $e.Y - $b.Y }; Update-Side; $canvas.Invalidate(); return }
     default { $script:sel = ''; Update-Side; $canvas.Invalidate() }
   }
@@ -395,7 +514,7 @@ $canvas.Add_MouseMove({
         $edg = [string]$ch; $axis = if ($edg -in 'l', 'r') { 'x' } else { 'y' }
         $val = if ($axis -eq 'x') { ($e.X - $v.A.X) / $v.A.Width } else { ($e.Y - $v.A.Y) / $v.A.Height }
         $tol = if ($axis -eq 'x') { 10 / $v.A.Width } else { 10 / $v.A.Height }
-        $t.rect = Get-ResizedRect $t.rect $edg $val (Get-Guides $others $axis $t.id) $tol $mf.w $mf.h
+        $t.rect = Get-ResizedRect $t.rect $edg $val (Get-Guides $others $axis $t.id) $tol $mf.w $mf.h $mf.xw $mf.xh
       }
     }
     'move' {
@@ -410,6 +529,7 @@ $canvas.Add_MouseMove({
       $others = @(Get-Tiles | Where-Object { $_.monitor -eq $v.Live.id })
       $r = Copy-Rect $t.rect; $r.x = ($e.X - $d.Dx - $v.A.X) / $v.A.Width; $r.y = ($e.Y - $d.Dy - $v.A.Y) / $v.A.Height
       $t.rect = Get-SnappedMove $r (Get-Guides $others 'x' $t.id) (Get-Guides $others 'y' $t.id) (10 / $v.A.Width) (10 / $v.A.Height)
+      $d.Moved = $true
     }
     'card' {
       $v = Get-ViewAt $e.Location; if (-not $v) { return }
@@ -422,7 +542,32 @@ $canvas.Add_MouseMove({
   }
   Set-Dirty; $canvas.Invalidate()
 })
-$canvas.Add_MouseUp({ param($s, $e) if ($script:drag) { $script:drag = $null; Update-Side; $canvas.Invalidate() } })
+$canvas.Add_MouseUp({ param($s, $e)
+  if ($script:drag) {
+    $d = $script:drag; $script:drag = $null
+    # a moved tile settles with a bounce; "snapped" when an edge landed on another tile or the screen edge
+    if ($d.Mode -in 'move', 'edge' -and $d.Hit.Tile -and ($d.Mode -eq 'edge' -or $d.Moved) -and $script:Animate) {
+      $gl = Get-AlignedGuides $d.Hit.Tile $true
+      $script:bounce = @{ Id = $d.Hit.Tile.id; Clock = [Diagnostics.Stopwatch]::StartNew(); Snapped = (@($gl.X).Count + @($gl.Y).Count -gt 0) }
+      if ($d.Mode -eq 'edge') { $script:bounce.Id = '' }   # resizing: no bounce, only the tick
+      if ($d.Mode -eq 'edge' -and $script:bounce.Snapped) { $script:bounce.Id = $d.Hit.Tile.id; $script:bounce.NoMove = $true }
+      $bounceTimer.Start()
+    }
+    Update-Side; $canvas.Invalidate()
+  } })
+$script:bounce = $null
+$bounceTimer = New-Object Windows.Forms.Timer; $bounceTimer.Interval = 15
+$bounceTimer.Add_Tick({ if (-not $script:bounce -or $script:bounce.Clock.ElapsedMilliseconds -gt 720) { $bounceTimer.Stop(); $script:bounce = $null }; $canvas.Invalidate() })
+# the edges of a tile that line up with another tile's edges (with $edges: the screen's edges count too)
+function Get-AlignedGuides($t, [bool]$edges = $false) {
+  $xs = @(); $ys = @(); $eps = 0.0005
+  $others = @(Get-Tiles | Where-Object { $_.monitor -eq $t.monitor -and $_.id -ne $t.id })
+  $gx = @(); $gy = @(); foreach ($o in $others) { $gx += [double]$o.rect.x; $gx += (Get-Right $o.rect); $gy += [double]$o.rect.y; $gy += (Get-Bottom $o.rect) }
+  if ($edges) { $gx += 0.0; $gx += 1.0; $gy += 0.0; $gy += 1.0 }
+  foreach ($v in @([double]$t.rect.x, (Get-Right $t.rect))) { foreach ($q in $gx) { if ([Math]::Abs($v - $q) -lt $eps -and ($edges -or ($v -gt $eps -and $v -lt 1 - $eps))) { $xs += $q; break } } }
+  foreach ($v in @([double]$t.rect.y, (Get-Bottom $t.rect))) { foreach ($q in $gy) { if ([Math]::Abs($v - $q) -lt $eps -and ($edges -or ($v -gt $eps -and $v -lt 1 - $eps))) { $ys += $q; break } } }
+  return @{ X = $xs; Y = $ys }
+}
 $canvas.Add_MouseLeave({ $script:hover = $null; $canvas.Invalidate() })
 
 function Rename-Tile($t) {
@@ -439,6 +584,31 @@ function Show-TileMenu($t, $pt) {
   if ($t.kind -ne 'league' -and $t.kind -ne 'ugg') {
     $iE = $m.Items.Add($(if ($t.exit -eq 'close') { 'When the routine exits: Closes (click for Stays open)' } else { 'When the routine exits: Stays open (click for Closes)' })); $iE.Tag = $t.id
     $iE.Add_Click({ param($s, $e) Save-UndoPoint; $tt = Get-Tile $s.Tag; $tt.exit = $(if ($tt.exit -eq 'close') { 'leave' } else { 'close' }); Set-Dirty; Update-Side; $canvas.Invalidate() })
+  }
+  # quick sizes: one click puts the tile on a common part of its screen (never smaller than the app allows)
+  if ($t.kind -ne 'league' -and -not ($t.kind -eq 'spotify' -and $t.mini)) {
+    $qs = New-Object Windows.Forms.ToolStripMenuItem('Quick size')
+    $qs.DropDown.BackColor = $script:C.Panel; $qs.DropDown.ForeColor = $script:C.Text; try { $qs.DropDown.ShowImageMargin = $false } catch {}
+    $third = 1.0 / 3
+    $sizes = [ordered]@{
+      'Full screen' = @(0, 0, 1, 1); '-1' = $null
+      'Left half' = @(0, 0, 0.5, 1); 'Right half' = @(0.5, 0, 0.5, 1); 'Top half' = @(0, 0, 1, 0.5); 'Bottom half' = @(0, 0.5, 1, 0.5); '-2' = $null
+      'Left third' = @(0, 0, $third, 1); 'Middle third' = @($third, 0, $third, 1); 'Right third' = @((2 * $third), 0, $third, 1)
+      'Top third' = @(0, 0, 1, $third); 'Middle third (across)' = @(0, $third, 1, $third); 'Bottom third' = @(0, (2 * $third), 1, $third); '-3' = $null
+      'Top-left quarter' = @(0, 0, 0.5, 0.5); 'Top-right quarter' = @(0.5, 0, 0.5, 0.5); 'Bottom-left quarter' = @(0, 0.5, 0.5, 0.5); 'Bottom-right quarter' = @(0.5, 0.5, 0.5, 0.5)
+    }
+    foreach ($k in $sizes.Keys) {
+      if ($k -like '-*') { [void]$qs.DropDownItems.Add('-'); continue }
+      $it = New-Object Windows.Forms.ToolStripMenuItem($k); $it.Tag = @{ Id = $t.id; R = $sizes[$k] }
+      $it.Add_Click({ param($s, $e)
+        $tt = Get-Tile $s.Tag.Id; if (-not $tt) { return }
+        Save-UndoPoint
+        $q = $s.Tag.R; $r = @{ x = [double]$q[0]; y = [double]$q[1]; w = [double]$q[2]; h = [double]$q[3] }
+        $v = Get-ViewFor $tt.monitor; if ($v) { $r = Set-MinSize $r (Get-MinFrac $tt $v.Area) }
+        $tt.rect = $r; Set-Dirty; Update-Side; $canvas.Invalidate() })
+      [void]$qs.DropDownItems.Add($it)
+    }
+    [void]$m.Items.Add($qs)
   }
   [void]$m.Items.Add('-')
   $iX = $m.Items.Add('Remove from routine'); $iX.Tag = $t.id
@@ -460,6 +630,29 @@ function Show-PresetMenu($v, $pt) {
 # ======================= side panel =======================
 function Add-Side($ctl, [int]$h) { $ctl.Location = New-Object Drawing.Point(0, $script:sy); $ctl.Width = 310; $side.Controls.Add($ctl); $script:sy += $h }
 function Add-SideLabel([string]$t, $font, $color, [int]$h) { $l = New-Label $t $font $color 0 0 310 ($h - 4); Add-Side $l $h; return $l }
+function Set-AutoStart([string]$v) {
+  $script:R | Add-Member -NotePropertyName autoStart -NotePropertyValue ("$v".Trim() -replace '(?i)\.exe$', '') -Force
+  Set-Dirty; Update-Side
+}
+# pick the program that starts this routine: off, one of the programs that are open now, or a typed name
+function Show-AutoStartMenu($btn) {
+  $m = New-Object Windows.Forms.ContextMenuStrip
+  $m.BackColor = $script:C.Panel; $m.ForeColor = $script:C.Text; $m.ShowImageMargin = $false
+  $cur = "$($script:R.autoStart)".Trim()
+  $off = $m.Items.Add($(if (-not $cur) { [string][char]0x2713 + '  Off' } else { '     Off' })); $off.Add_Click({ Set-AutoStart '' })
+  [void]$m.Items.Add('-')
+  $skip = @('powershell', 'pwsh', 'explorer', 'Mise', 'TextInputHost', 'ShellExperienceHost', 'SearchHost', 'StartMenuExperienceHost', 'LockApp', 'ApplicationFrameHost', 'SystemSettings')
+  $names = @(); try { $names = @(Get-WinSnapshot | ForEach-Object { Get-ProcName $_.Pid } | Where-Object { $_ -and $skip -notcontains $_ } | Sort-Object -Unique) } catch {}
+  if ($cur -and $names -notcontains $cur) { $names = @($cur) + $names }
+  foreach ($n in @($names | Select-Object -First 24)) {
+    $it = $m.Items.Add($(if ($n -eq $cur) { [string][char]0x2713 + '  ' + $n } else { '     ' + $n })); $it.Tag = $n
+    $it.Add_Click({ param($s, $e) Set-AutoStart "$($s.Tag)" })
+  }
+  [void]$m.Items.Add('-')
+  $ty = $m.Items.Add('     Type a name...')
+  $ty.Add_Click({ $v = Show-MiseInput 'Start with a program' 'Program name as Task Manager shows it, without .exe (for example Wow)' "$($script:R.autoStart)"; if ($null -ne $v) { Set-AutoStart $v } })
+  $m.Show($btn, (New-Object Drawing.Point(($btn.Width - 200), $btn.Height)))
+}
 function Update-Side {
   $side.SuspendLayout(); $side.Controls.Clear(); $script:sy = 0
   if (-not $script:R) { $side.ResumeLayout(); return }
@@ -473,6 +666,10 @@ function Update-Side {
   Add-Side $bK 44
   if ($script:hkCapture) { $null = Add-SideLabel 'Press the keys now. Backspace clears, Esc cancels.' $script:fSmall $script:C.Muted 40 }
   elseif ($script:hkMsg) { $null = Add-SideLabel $script:hkMsg $script:fSmall $script:C.Muted 40 }
+  $bAuto = New-Btn 'Start with a program' 0 0 310 38 'setting'; $bAuto.Chip = $(if ("$($script:R.autoStart)".Trim()) { "$($script:R.autoStart)".Trim() } else { 'off' })
+  $bAuto.Add_Click({ param($s, $e) Show-AutoStartMenu $s })
+  $tip.SetToolTip($bAuto, 'The routine starts by itself when this program opens (for example your game). Open the program first to pick it from the list.')
+  Add-Side $bAuto 44
   $bCard = New-Btn 'Pop-up spot on the map' 0 0 310 38 'setting'; $bCard.IsSwitch = $true; $bCard.On = [bool]$script:R.card
   $bCard.Add_Click({
     Save-UndoPoint
@@ -516,9 +713,15 @@ function Update-Side {
             $tt = Get-Tile $s.Tag; $tt.mini = -not [bool]$tt.mini; $s.On = $tt.mini
             $vv = Get-ViewFor $tt.monitor; if (-not $vv) { $vv = $script:view | Select-Object -First 1 }
             if ($tt.mini) {
-              $tt.minW = 300; $tt.minH = 90
+              # the mini player's real limits: read from it when it is open, else the sizes Spotify allowed before
+              $tt | Add-Member -NotePropertyName maxW -NotePropertyValue 0 -Force; $tt | Add-Member -NotePropertyName maxH -NotePropertyValue 0 -Force
+              $tt.minW = 242; $tt.minH = 53
+              try {
+                $mw = Get-WinSnapshot | Where-Object { (Get-ProcName $_.Pid) -eq 'Spotify' -and [MiseWin]::IsTopmost($_.H) } | Select-Object -First 1
+                if ($mw) { $mn = [MiseWin2]::ProbeMinSize($mw.H); $mx = [MiseWin2]::ProbeMaxSize($mw.H); if ($mn) { $tt.minW = $mn[0]; $tt.minH = $mn[1] }; if ($mx) { $tt.maxW = $mx[0]; $tt.maxH = $mx[1] } }
+              } catch {}
               if ($vv) { $tt.rect.w = [Math]::Min(1.0, 360.0 / $vv.Area.W); $tt.rect.h = [Math]::Min(1.0, 100.0 / $vv.Area.H); if ($tt.rect.x + $tt.rect.w -gt 1) { $tt.rect.x = 1 - $tt.rect.w }; if ($tt.rect.y + $tt.rect.h -gt 1) { $tt.rect.y = 1 - $tt.rect.h } }
-            } else { $tt.minW = 800; $tt.minH = 600 }
+            } else { $tt.minW = 800; $tt.minH = 600; $tt | Add-Member -NotePropertyName maxW -NotePropertyValue 0 -Force; $tt | Add-Member -NotePropertyName maxH -NotePropertyValue 0 -Force }
           } catch { Write-Log "mini toggle failed: $($_.Exception.Message)" }
           $s.Invalidate(); Set-Dirty; Update-Side; $canvas.Invalidate() })
         Add-Side $bm 44
@@ -529,12 +732,16 @@ function Update-Side {
         $sb = New-MiseText 0 0 310 "$($t.streamer)"; $sb.Box.Tag = $t.id
         $sb.Box.Add_TextChanged({ param($s, $e) $tt = Get-Tile $s.Tag; if ($tt -and "$($tt.streamer)" -ne $s.Text.Trim()) { $tt | Add-Member -NotePropertyName streamer -NotePropertyValue $s.Text.Trim() -Force; Set-Dirty } })
         Add-Side $sb.Panel 38
-        $null = Add-SideLabel 'While this routine runs and League is open, Mise watches Discord. When this friend streams in your voice channel, it opens the stream, pops it out and puts it here. Be in the voice channel with Discord open.' $script:fSmall $script:C.Muted 72
+        $bMu = New-Btn 'Open with sound off' 0 0 310 38 'setting'; $bMu.IsSwitch = $true; $bMu.On = [bool]$t.mute; $bMu.Tag = $t.id
+        $bMu.Add_Click({ param($s, $e) $tt = Get-Tile $s.Tag; if ($tt) { $tt | Add-Member -NotePropertyName mute -NotePropertyValue (-not [bool]$tt.mute) -Force; $s.On = [bool]$tt.mute; $s.Invalidate(); Set-Dirty } })
+        Add-Side $bMu 44
+        $null = Add-SideLabel 'Drag the tile to choose where the stream popout goes; drag an edge or corner to size it. While the routine runs (a League routine: once League is open) and you are in a voice call, Mise opens this friend''s stream when they go live, pops it out and puts it here. It never joins a channel for you. Saved changes move an open popout right away.' $script:fSmall $script:C.Muted 112
       }
       'league' { $null = Add-SideLabel 'The League client keeps the size set in League. Drag it to choose where it opens.' $script:fSmall $script:C.Muted 40 }
       default { $null = Add-SideLabel $(if ($t.exe) { $t.exe } elseif ($t.appid) { $t.appid } else { 'Learned on the first run' }) $script:fSmall $script:C.Muted 36 }
     }
     if ($t.minW -or $t.minH) { $null = Add-SideLabel "Smallest size the app allows: $($t.minW) x $($t.minH) px" $script:fSmall $script:C.Muted 24 }
+    if ($t.maxW -or $t.maxH) { $null = Add-SideLabel "Largest size it allows: $($t.maxW) x $($t.maxH) px" $script:fSmall $script:C.Muted 24 }
     if ($t.kind -ne 'league' -and $t.kind -ne 'ugg') {
       $be = New-Btn 'When the routine exits' 0 0 310 38 'setting'; $be.Seg = 'Stays open|Closes'; $be.On = ($t.exit -eq 'close'); $be.Tag = $t.id
       $be.Add_Click({ param($s, $e) Save-UndoPoint; $tt = Get-Tile $s.Tag; $tt.exit = $(if ($tt.exit -eq 'close') { 'leave' } else { 'close' }); $s.On = ($tt.exit -eq 'close'); $s.Invalidate(); Set-Dirty })

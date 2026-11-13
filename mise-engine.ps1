@@ -81,6 +81,16 @@ public class MiseWin2 {
     if (v == null) return null;
     return new int[] { v[2], v[3] };
   }
+  // the largest size the app accepts (some, like the Spotify mini player, have one): grow it for a moment, read, put it back
+  public static int[] ProbeMaxSize(IntPtr h) {
+    RECT wr; if (!GetWindowRect(h, out wr)) return null;
+    SetWindowPos(h, IntPtr.Zero, 0, 0, 20000, 20000, 0x0016);
+    System.Threading.Thread.Sleep(120);
+    int[] v = Visible(h);
+    SetWindowPos(h, IntPtr.Zero, wr.Left, wr.Top, wr.Right - wr.Left, wr.Bottom - wr.Top, 0x0014);
+    if (v == null) return null;
+    return new int[] { v[2], v[3] };
+  }
 }
 "@
 }
@@ -290,7 +300,7 @@ function Set-SpotifyMiniPlace($tile, $px) {
 # Pop Out, and puts the popout window on the tile. Buttons are found by their names (screen-reader names),
 # never by screen position. Words in the common Discord languages.
 $script:StreamLive  = '(?i)^(live|canl[\u0131i]|en direct|en vivo|ao vivo|in diretta|na [\u017cz]ywo|\u0432 \u044d\u0444\u0438\u0440\u0435)$'
-$script:StreamWatch = '(?i)(watch stream|join stream|yay[\u0131i]n[\u0131i] [\u0130Ii]zle|yay[\u0131i]na kat[\u0131i]l|regarder le stream|ver transmisi[o\u00f3]n|stream ansehen|guarda (lo )?stream|assistir|ogl[a\u0105]daj)'
+$script:StreamWatch = '(?i)(^watch$|^[\u0130i]zle$|watch stream|yay[\u0131i]n[\u0131i] [\u0130Ii]zle|regarder le stream|ver transmisi[o\u00f3]n|stream ansehen|guarda (lo )?stream|assistir|ogl[a\u0105]daj)'
 $script:StreamPop   = '(?i)(pop ?out|a[\u00e7c][\u0131i]l[\u0131i]r pencere|ayr[\u0131i] pencere|fen[e\u00ea]tre (flottante|s[e\u00e9]par[e\u00e9]e)|ventana emergente|externes fenster|finestra separata|janela separada)'
 function Get-StreamWinPath { Join-Path $script:DataDir '_stream-win.txt' }
 function Get-StreamWin { try { $f = Get-StreamWinPath; if (Test-Path $f) { $h = [int64](Get-Content -LiteralPath $f -Raw).Trim(); if ($h -and [MiseWin]::IsWindow([IntPtr]$h)) { return $h } } } catch {}; return 0 }
@@ -316,23 +326,48 @@ function Press-UiaElement($e, [bool]$allowClick) {
   if ($allowClick) { try { $r = $e.Current.BoundingRectangle; if ($r.Width -gt 0) { [MiseWin]::ClickXY([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2)); return $true } } catch {} }
   return $false
 }
-# the person's LIVE entry in the voice channel list: an element with their name whose row also says LIVE
-function Find-LiveEntry($els, [string]$who) {
-  $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+function Get-UiaType($e) { try { return ($e.Current.ControlType.ProgrammaticName -replace 'ControlType\.', '') } catch { return '' } }
+function Get-UiaRect($e) { try { $b = $e.Current.BoundingRectangle; if ($b.Width -gt 0 -and $b.Height -gt 0) { return $b } } catch {}; return $null }
+function Get-NameKey([string]$s) { return ("$s".ToLowerInvariant() -replace '[^\p{L}\p{Nd}]', '') }
+function Test-UiaInside($e, $rect) { $r = Get-UiaRect $e; if (-not $r -or -not $rect) { return $false }; $cx = $r.X + $r.Width / 2; $cy = $r.Y + $r.Height / 2; return ($cx -ge $rect.X -and $cx -le ($rect.X + $rect.Width) -and $cy -ge $rect.Y -and $cy -le ($rect.Y + $rect.Height)) }
+# Discord's voice view (verified on Discord 1.0.9268, Nov 2026): every stream is a tile, a button named
+# "<call tile>, <stream>, <username>" - two commas in every language - with a "Watch Stream" button inside until you watch it.
+function Get-StreamTiles($els) {
+  $out = @()
   foreach ($e in $els) {
-    $n = Get-UiaName $e
-    if (-not $n -or $n -notlike "*$who*") { continue }
-    if ($n -match '(?i)\b(live|canl[\u0131i]|streaming|yay[\u0131i]nda)\b') { return $e }
-    $p = $null; try { $p = $walker.GetParent($e) } catch {}
-    for ($up = 0; $up -lt 3 -and $p; $up++) {
-      try { foreach ($k in @($p.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition))) { if ((Get-UiaName $k) -match $script:StreamLive) { return $k } } } catch {}
-      try { $p = $walker.GetParent($p) } catch { $p = $null }
-    }
+    if ((Get-UiaType $e) -ne 'Button') { continue }
+    $n = Get-UiaName $e; if (($n.Length - $n.Replace(',', '').Length) -ne 2) { continue }
+    $r = Get-UiaRect $e; if (-not $r -or $r.Width -lt 120 -or $r.Height -lt 70) { continue }
+    $out += @{ El = $e; User = ($n -split ',')[-1].Trim(); Rect = $r }
   }
+  return $out
+}
+# display names of the people who are LIVE, in the order of the voice channel list (a person's button, then a LIVE badge)
+function Get-LiveNames($els) {
+  $out = @(); $cur = ''
+  foreach ($e in $els) {
+    $t = Get-UiaType $e; $n = Get-UiaName $e
+    if ($t -eq 'Button') { $cur = $(if ($n -match ',' -or $n -match $script:StreamWatch) { '' } else { $n }); continue }
+    if ($t -eq 'Text' -and $cur -and $n -match $script:StreamLive) { if ($out -notcontains $cur) { $out += $cur }; $cur = '' }
+  }
+  return $out
+}
+# the tile of <who>: by name (the tile carries the username, the user typed the display name - often the same),
+# else by position (the stream tiles come in the same order as the LIVE people in the voice list)
+function Select-StreamTile($tiles, $live, [string]$who) {
+  $tiles = @($tiles); $live = @($live); if (-not $tiles.Count) { return $null }
+  $k = Get-NameKey $who; if (-not $k) { return $null }
+  foreach ($t in $tiles) { $u = Get-NameKey $t.User; if ($u -and ($u.Contains($k) -or ($u.Length -ge 3 -and $k.Contains($u)))) { return $t } }
+  $idx = -1; for ($i = 0; $i -lt $live.Count; $i++) { if ((Get-NameKey $live[$i]).Contains($k)) { $idx = $i; break } }
+  if ($idx -ge 0 -and $live.Count -eq $tiles.Count) { return $tiles[$idx] }
   return $null
 }
+$script:StreamHide = '(?i)^(hide members|[u\u00fc]yeleri gizle|masquer les membres|mitglieder ausblenden|ocultar miembros|nascondi membri|ocultar membros)$'
+$script:StreamMute = '(?i)^(mute|sesi kapat|sessize al|couper le son|stummschalten|silenciar)$'
+$script:StreamBack = '(?i)^(go back|geri( git| d[o\u00f6]n)?|retour|zur[u\u00fc]ck|atr[a\u00e1]s|indietro|voltar|wstecz)$'
 # opens <who>'s stream in a popout; returns @{ H = popout handle or 0; Why = what is missing }
-function Open-DiscordStream([string]$who, [bool]$allowClick) {
+# Everything is pressed through accessibility (no mouse), so it also works while a game has the mouse.
+function Open-DiscordStream([string]$who, [bool]$allowClick, [bool]$mute = $false) {
   try { Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop } catch { return @{ H = 0; Why = 'accessibility not available' } }
   $main = Get-DiscordMain
   if (-not $main) { return @{ H = 0; Why = 'Discord is not open' } }
@@ -340,43 +375,95 @@ function Open-DiscordStream([string]$who, [bool]$allowClick) {
   $before = @(Get-WinSnapshot | Where-Object { (Get-ProcName $_.Pid) -eq 'Discord' } | ForEach-Object { [int64]$_.H })
   $root = [System.Windows.Automation.AutomationElement]::FromHandle($main.H)
   $els = Get-UiaAll $root
-  # already watching (stream open inside Discord)? then only Pop Out is needed
-  $pop = $els | Where-Object { (Get-UiaName $_) -match $script:StreamPop } | Select-Object -First 1
-  if (-not $pop) {
-    $watch = $els | Where-Object { (Get-UiaName $_) -match $script:StreamWatch -and (Get-UiaName $_) -like "*$who*" } | Select-Object -First 1
-    if (-not $watch) {
-      $live = Find-LiveEntry $els $who
-      if (-not $live) { return @{ H = 0; Why = "$who is not streaming in your voice channel" } }
-      if (-not (Press-UiaElement $live $allowClick)) { return @{ H = 0; Why = "could not press $who's LIVE entry" } }
-      Start-Sleep -Milliseconds 1500
-      $els = Get-UiaAll $root
-      $watch = $els | Where-Object { (Get-UiaName $_) -match $script:StreamWatch } | Select-Object -First 1
-    }
-    if ($watch) { if (-not (Press-UiaElement $watch $allowClick)) { return @{ H = 0; Why = 'could not press Watch Stream' } }; Start-Sleep -Milliseconds 2000; $els = Get-UiaAll $root }
-    $pop = $els | Where-Object { (Get-UiaName $_) -match $script:StreamPop } | Select-Object -First 1
+  # only while you are in a voice call yourself: the "channel / server" link under Voice Connected exists only then.
+  # Out of a call Mise does nothing - no button that could join a channel is ever pressed.
+  $voiceLink = $els | Where-Object { (Get-UiaType $_) -eq 'Hyperlink' -and (Get-UiaName $_) -match '^\S.* / \S' -and (Get-UiaName $_) -notmatch '(?i)https?:|www\.' } | Select-Object -First 1
+  if (-not $voiceLink) { return @{ H = 0; Why = 'you are not in a voice channel' } }
+  $tiles = @(Get-StreamTiles $els); $live = @(Get-LiveNames $els); $opened = $false
+  if (-not $tiles.Count) {
+    # the voice view is not showing: open it through the "channel / server" link next to Voice Connected.
+    # NEVER press a voice channel's own button: that joins the channel.
+    $chan = $voiceLink
+    if (-not (Press-UiaElement $chan $allowClick)) { return @{ H = 0; Why = 'could not open the voice channel view' } }
+    $opened = $true; Start-Sleep -Milliseconds 1800
+    $els = Get-UiaAll $root; $tiles = @(Get-StreamTiles $els); $l2 = @(Get-LiveNames $els); if ($l2.Count) { $live = $l2 }
   }
-  if (-not $pop) { return @{ H = 0; Why = 'no Pop Out button (is the stream open in Discord?)' } }
+  $back = $els | Where-Object { (Get-UiaType $_) -eq 'Button' -and (Get-UiaName $_) -match $script:StreamBack } | Select-Object -First 1
+  $tile = Select-StreamTile $tiles $live $who
+  if (-not $tile) {
+    if ($opened -and $back) { [void](Press-UiaElement $back $false) }
+    return @{ H = 0; Why = "$who is not streaming in your voice channel" }
+  }
+  # not watching yet: the tile has a Watch Stream button
+  $watch = $els | Where-Object { (Get-UiaType $_) -eq 'Button' -and (Get-UiaName $_) -match $script:StreamWatch -and (Test-UiaInside $_ $tile.Rect) } | Select-Object -First 1
+  if ($watch) {
+    if (-not (Press-UiaElement $watch $allowClick)) { return @{ H = 0; Why = 'could not press Watch Stream' } }
+    Start-Sleep -Milliseconds 2500
+    $els = Get-UiaAll $root; $t2 = Select-StreamTile @(Get-StreamTiles $els) $live $who; if ($t2) { $tile = $t2 }
+  }
+  # several tiles in the grid: bring this stream to the front, so the popout shows it big (a tile that is already big is left alone)
+  $others = @($els | Where-Object { (Get-UiaType $_) -eq 'Button' -and (Get-UiaName $_) -match ',' -and (Get-UiaRect $_) -and (Get-UiaRect $_).Width -ge 120 -and (Get-UiaRect $_).Height -ge 70 })
+  if ($others.Count -gt 1 -and $tile.Rect.Width -lt 1.6 * (($others | ForEach-Object { (Get-UiaRect $_).Width } | Measure-Object -Minimum).Minimum)) {
+    if (Press-UiaElement $tile.El $false) { Start-Sleep -Milliseconds 900; $els = Get-UiaAll $root }
+  }
+  $pop = $els | Where-Object { (Get-UiaType $_) -eq 'Button' -and (Get-UiaName $_) -match $script:StreamPop } | Select-Object -First 1
+  if (-not $pop) { return @{ H = 0; Why = 'no Pop Out button in the voice view' } }
   if (-not (Press-UiaElement $pop $allowClick)) { return @{ H = 0; Why = 'could not press Pop Out' } }
   for ($i = 0; $i -lt 16; $i++) {
     Start-Sleep -Milliseconds 500
     $new = @(Get-WinSnapshot | Where-Object { (Get-ProcName $_.Pid) -eq 'Discord' -and $before -notcontains [int64]$_.H }) | Select-Object -First 1
-    if ($new) { return @{ H = [int64]$new.H; Why = '' } }
+    if ($new) {
+      # (Discord's main window returns to the channel it was showing by itself)
+      try {
+        Start-Sleep -Milliseconds 1200
+        $pe = Get-UiaAll ([System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$new.H))
+        # sound off (tile setting): the stream's own Mute button sits on its small tile in the strip - never the microphone's Mute in the bar below
+        if ($mute) {
+          $k = Get-NameKey $who; $pts = @(Get-StreamTiles $pe)
+          $mine = @($pts | Where-Object { $u = Get-NameKey $_.User; $u -and ($u.Contains($k) -or ($u.Length -ge 3 -and $k.Contains($u))) })
+          if (-not $mine.Count) { $one = Select-StreamTile $pts $live $who; if ($one) { $mine = @($one) } }
+          foreach ($mt in $mine) {
+            $mb = $pe | Where-Object { (Get-UiaType $_) -eq 'Button' -and (Get-UiaName $_) -match $script:StreamMute -and (Test-UiaInside $_ $mt.Rect) } | Select-Object -First 1
+            if ($mb) { [void](Press-UiaElement $mb $false); break }
+          }
+        }
+        # only the stream in the popout: the strip with everyone's tiles is folded away
+        $hm = $pe | Where-Object { (Get-UiaType $_) -eq 'Button' -and (Get-UiaName $_) -match $script:StreamHide } | Select-Object -First 1
+        if ($hm) { [void](Press-UiaElement $hm $false) }
+      } catch {}
+      return @{ H = [int64]$new.H; Why = '' }
+    }
   }
   return @{ H = 0; Why = 'pressed Pop Out but no popout window appeared' }
 }
 # the stream watcher: its own hidden process (so the tray never freezes while Discord is searched).
-# Runs while this routine is the active one; acts only while League is open; checks every 10 s.
+# Runs while this routine is the active one (a League routine: only while League is open); checks every 10 s.
 function Invoke-StreamWatch($cfg, $routine) {
-  $first = $false; $mx = New-Object System.Threading.Mutex($true, 'Local\MiseStream', [ref]$first)
-  if (-not $first) { return }
+  # one watcher at a time; when routines are switched, the old watcher needs a few seconds to stop
+  $mx = New-Object System.Threading.Mutex($false, 'Local\MiseStream')
+  try { if (-not $mx.WaitOne(20000)) { return } } catch [System.Threading.AbandonedMutexException] { }
   $tile = @(@($routine.tiles) | Where-Object { $_.kind -eq 'stream' -and "$($_.streamer)".Trim() })[0]
   if (-not $tile) { return }
   $who = "$($tile.streamer)".Trim(); $lastWhy = ''; $diagDone = $false; $next = [datetime]::MinValue
   Write-Log "[stream] watching for $who's stream"
+  $stamp = $(try { (Get-Item -LiteralPath $script:CfgPath).LastWriteTime } catch { $null })
   while ((Get-ActiveRoutineId) -eq $routine.id) {
     Start-Sleep -Seconds 2
+    # saved in Edit routines while running: take the new spot and size (the open popout moves on the next check)
+    if (-not $script:RoutineFileArg) {
+      try {
+        $st = (Get-Item -LiteralPath $script:CfgPath).LastWriteTime
+        if ($st -ne $stamp) {
+          $stamp = $st; $c2 = Get-MiseConfig; $r2 = $c2.routines | Where-Object { $_.id -eq $routine.id } | Select-Object -First 1
+          $t2 = $null; if ($r2) { $t2 = @(@($r2.tiles) | Where-Object { $_.kind -eq 'stream' -and "$($_.streamer)".Trim() })[0] }
+          if (-not $t2) { Write-Log '[stream] tile removed from the routine'; break }
+          $cfg = $c2; $routine = $r2; $tile = $t2; $who = "$($tile.streamer)".Trim()
+        }
+      } catch {}
+    }
     $inGame = [bool](Get-Process -Name 'League of Legends' -ErrorAction SilentlyContinue)
-    if (-not $inGame -and -not (Get-Process -Name 'LeagueClientUx' -ErrorAction SilentlyContinue)) { continue }
+    # a League routine waits for League; any other routine shows the stream as soon as it is live
+    if ($routine.league -and -not $inGame -and -not (Get-Process -Name 'LeagueClientUx' -ErrorAction SilentlyContinue)) { continue }
     $px = Get-TilePx $tile @(Get-LiveMonitors $cfg) $routine; if (-not $px) { continue }
     $h = Get-StreamWin
     if ($h) {
@@ -388,7 +475,10 @@ function Invoke-StreamWatch($cfg, $routine) {
     if ((Get-Date) -lt $next) { continue }
     $next = (Get-Date).AddSeconds(10)
     # a real mouse click only outside a game; in game only buttons that can be pressed without the mouse
-    $res = Open-DiscordStream $who (-not $inGame)
+    if ((Get-ActiveRoutineId) -ne $routine.id) { break }
+    $res = Open-DiscordStream $who (-not $inGame) ([bool]$tile.mute)
+    # the routine was exited while Discord was being searched: the popout that just opened goes away again
+    if ($res.H -and (Get-ActiveRoutineId) -ne $routine.id) { if ($tile.exit -ne 'leave') { try { [MiseWin]::Close([IntPtr]$res.H) } catch {} }; break }
     if ($res.H) {
       Set-StreamWin $res.H; Set-WindowPlace ([IntPtr]$res.H) $px
       $c = @{ Track = @() }; Track-ForExit ([pscustomobject]@{ onExit = $(if ($tile.exit -eq 'leave') { 'leave' } else { 'close' }); name = "$($tile.name)" }) ([IntPtr]$res.H) $c; Save-ExitTrack $routine $c
@@ -397,7 +487,7 @@ function Invoke-StreamWatch($cfg, $routine) {
     }
     if ($res.Why -ne $lastWhy) { Write-Log "[stream] $($res.Why)"; $lastWhy = $res.Why }
     # once: Discord shows something Mise can't use - write what it sees, so the button names can be fixed
-    if (-not $diagDone -and $res.Why -notlike '*not streaming*' -and $res.Why -ne 'Discord is not open') { $diagDone = $true; Write-Log "[stream-diag] $(Get-StreamDiag $who)" }
+    if (-not $diagDone -and $res.Why -notlike '*not streaming*' -and $res.Why -notlike '*not in a voice*' -and $res.Why -ne 'Discord is not open') { $diagDone = $true; Write-Log "[stream-diag] $(Get-StreamDiag $who)" }
   }
   Set-StreamWin 0
   Write-Log '[stream] watcher stopped'
@@ -478,10 +568,13 @@ function Get-FriendlyAppName0([string]$proc, [string]$exe, [string]$title) {
 # a ticked capture row becomes a tile (min size probed once here, so the map can respect it)
 function ConvertTo-Tile($item, [string]$exitMode) {
   $min = $null; try { if ($item.Kind -ne 'league') { $min = [MiseWin2]::ProbeMinSize($item.H) } } catch {}
+  # a largest size only matters for the Spotify mini player (other apps can fill a screen)
+  $max = $null; try { if ($item.Kind -eq 'spotify' -and $item.Mini) { $max = [MiseWin2]::ProbeMaxSize($item.H) } } catch {}
   $t = [pscustomobject]@{
     id = New-Id; kind = $item.Kind; name = $item.Name; monitor = $item.Monitor; rect = $item.Rect; exit = $exitMode
     exe = ''; appid = ''; proc = ''; cls = ''; url = ''; hint = ''; clean = $false; mini = $false
     minW = $(if ($min) { $min[0] } else { 0 }); minH = $(if ($min) { $min[1] } else { 0 })
+    maxW = $(if ($max) { $max[0] } else { 0 }); maxH = $(if ($max) { $max[1] } else { 0 })
   }
   switch ($item.Kind) {
     'web' { $t.url = $item.Url; $t.clean = $true; $t.hint = ($item.Name -split '\s+')[0] }
@@ -505,7 +598,7 @@ function Save-Timings($t) { try { Set-Content -LiteralPath (Join-Path $script:Da
 function Start-LeaguePart($cfg, $routine, $ctx, $lives) {
   $mod = Join-Path $script:MiseDir 'modules\riot-league.ps1'
   if (-not (Test-Path $mod)) { Say "[riot] module missing - skipped"; return }
-  $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$mod`"", '-Core', '-Queue', "$([int](Get-MiseSetting $cfg 'queue'))")
+  $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$mod`"", '-Core', '-Queue', "$(Get-AccountQueue $cfg $(if ($ctx.Account) { "$($ctx.Account)" } else { Get-ActiveAccountName }))")
   if ($ctx.Account) { $a += @('-Account', "`"$($ctx.Account)`"") } else { $a += '-Keep' }
   $lt = @($routine.tiles) | Where-Object { $_.kind -eq 'league' } | Select-Object -First 1
   if ($lt) { $px = Get-TilePx $lt $lives $routine; if ($px) { $a += @('-LeagueAt', "$($px.X),$($px.Y)") } }
@@ -535,12 +628,21 @@ function Invoke-TileRoutine($cfg, $routine, $ctx, [string]$mode = 'run') {
   $tiles = @($routine.tiles)
   if ($mode -eq 'exit') {
     Say "Exiting '$($routine.name)'"
+    # first: the routine is no longer the active one, so the stream watcher stops and does not reopen what is closed now
+    if ((Get-ActiveRoutineId) -eq $routine.id) { Set-ActiveRoutineId '' }
     Invoke-ExitTrack $routine
     $n = Show-AllTaskbars; if ($n) { Say "[taskbar] restored" }
-    if ((Get-ActiveRoutineId) -eq $routine.id) { Set-ActiveRoutineId '' }
     return
   }
   Say "$(if ($mode -eq 'arrange') { 'Arranging' } else { 'Starting' }) '$($routine.name)'"
+  # switching: another routine is on - it exits first (windows this routine also uses stay as they are)
+  if ($mode -eq 'run' -and $routine.id) {
+    $prev = Get-ActiveRoutineId
+    if ($prev -and $prev -ne $routine.id) {
+      $pr = $cfg.routines | Where-Object { $_.id -eq $prev } | Select-Object -First 1
+      if ($pr) { Say "[switch] leaving '$($pr.name)'"; Set-ActiveRoutineId ''; Invoke-ExitTrack $pr @($tiles | ForEach-Object { "$($_.name)" }); $null = Show-AllTaskbars }
+    }
+  }
   if ($mode -eq 'run') { $nh = Hide-OpenWindows; if ($nh) { Say "[desktop] $nh open windows minimized" } }
   if ($routine.id -and (@($routine.tiles).Count -or @($routine.taskbar).Count)) { Set-ActiveRoutineId $routine.id }
   if ($routine.id) { try { Start-StreamWatcher $routine $script:RoutineFileArg } catch {} }

@@ -11,6 +11,7 @@ function New-UiForm($title, $w, $h) {
   $f.Text = $title; $f.ClientSize = New-Object Drawing.Size($w, $h); $f.StartPosition = 'CenterScreen'
   $f.BackColor = $script:C.Bg; $f.ForeColor = $script:C.Text; $f.Font = $script:fNorm; $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false
   if (Test-Path $script:Icon) { try { $f.Icon = New-Object Drawing.Icon($script:Icon) } catch {} }
+  Set-MiseBackdrop $f; Set-MiseAppId $f
   return $f
 }
 function New-UiLabel($text, $x, $y, $w = 200, $h = 20, $muted = $false) {
@@ -58,18 +59,62 @@ function Get-RiotAccounts {
 }
 
 # ---------- monitor wizard: flash a number on every screen, the user names each one ----------
+# ---------- screens get their names by themselves: where they sit and what model they are ----------
+# e.g. "Main - MAG 274Q X24", "Left - LG ULTRAGEAR". The model comes from the screen itself (WMI); without it, the place only.
+function Get-ScreenModels {
+  $map = @{}
+  try {
+    foreach ($m in @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID -ErrorAction Stop)) {
+      $code = ("$($m.InstanceName)" -split '\\')[1]
+      $n = (@($m.UserFriendlyName) | Where-Object { $_ -gt 0 } | ForEach-Object { [char]$_ }) -join ''
+      if ($code -and $n.Trim()) { $map[$code.ToUpper()] = $n.Trim() }
+    }
+  } catch {}
+  return $map
+}
+function Get-AutoScreenName($s, $screens, $models, $keys) {
+  $prim = $screens | Where-Object Primary | Select-Object -First 1
+  $place = 'Main'
+  if (-not $s.Primary -and $prim) {
+    $cx = $s.Bounds.X + $s.Bounds.Width / 2; $cy = $s.Bounds.Y + $s.Bounds.Height / 2
+    $px = $prim.Bounds.X + $prim.Bounds.Width / 2; $py = $prim.Bounds.Y + $prim.Bounds.Height / 2
+    if ([Math]::Abs($cx - $px) -ge [Math]::Abs($cy - $py)) { $place = $(if ($cx -lt $px) { 'Left' } else { 'Right' }) } else { $place = $(if ($cy -lt $py) { 'Top' } else { 'Bottom' }) }
+    if ($s.Vertical) { $place += ' vertical' }
+  }
+  $model = ''; $hw = "$($keys[$s.DeviceName])"; if ($hw) { $model = "$($models[(($hw -split '#')[0]).ToUpper()])" }
+  if ($model) { return "$place - $model" }
+  return "$place screen"
+}
+# every connected screen the settings do not know yet is added with an automatic name; known screens keep their names
+function Update-AutoMonitors($cfg) {
+  $screens = @(Get-Screens); $keys = Get-MonitorKeys; $models = $null; $added = 0
+  $list = New-Object Collections.ArrayList; foreach ($m in @($cfg.monitors)) { [void]$list.Add($m) }
+  foreach ($s in $screens) {
+    $hw = "$($keys[$s.DeviceName])"
+    $known = $list | Where-Object { ($hw -and $_.hw -eq $hw) -or (-not $_.hw -and $_.deviceName -eq $s.DeviceName -and $_.size -eq $s.Size) } | Select-Object -First 1
+    if ($known) { continue }
+    if ($null -eq $models) { $models = Get-ScreenModels }
+    $n = Get-AutoScreenName $s $screens $models $keys
+    $base = $n; $k = 2; while (@($list | Where-Object { $_.name -eq $n }).Count) { $n = "$base $k"; $k++ }
+    [void]$list.Add([pscustomobject]@{ id = New-Id; name = $n; deviceName = $s.DeviceName; hw = $hw; size = $s.Size; vertical = $s.Vertical; primary = $s.Primary })
+    $added++
+  }
+  if ($added) { $cfg.monitors = @($list); Write-Log "screens: $added new screen(s) named automatically" }
+  return @{ Cfg = $cfg; Added = $added }
+}
 function Show-MonitorWizard($cfg) {
   # each screen in turn: a light tint with a copper frame and its number, and a Mise card on it to type the name
   $screens = Get-Screens
   $keys = Get-MonitorKeys
-  $found = @()
+  $found = @(); $script:wizModels = $null
   foreach ($s in $screens) {
     $o = New-Object Windows.Forms.Form
     $o.FormBorderStyle = 'None'; $o.StartPosition = 'Manual'; $o.Bounds = $s.Bounds; $o.TopMost = $true; $o.ShowInTaskbar = $false
     $o.BackColor = [Drawing.Color]::FromArgb(14, 14, 16); $o.Opacity = 0.32
     $o.Add_Paint({ param($sd, $e) $pen = New-Object Drawing.Pen($script:C.Accent, 14); $e.Graphics.DrawRectangle($pen, 7, 7, $sd.Width - 14, $sd.Height - 14); $pen.Dispose() })
     $o.Show(); $o.Refresh()
-    $def = if ($s.Primary) { 'Main screen' } elseif ($s.Vertical) { 'Vertical screen' } else { "Screen $($s.Index)" }
+    if ($null -eq $script:wizModels) { $script:wizModels = Get-ScreenModels }
+    $def = Get-AutoScreenName $s $screens $script:wizModels $keys
     $hw = "$($keys[$s.DeviceName])"
     $prev = $cfg.monitors | Where-Object { ($hw -and $_.hw -eq $hw) -or ($_.deviceName -eq $s.DeviceName -and $_.size -eq $s.Size) } | Select-Object -First 1
     if ($prev) { $def = $prev.name }
@@ -134,7 +179,7 @@ function New-MiseDialog([string]$title, [int]$w, [int]$h) {
   # same header as the Mise window: the mark, then the title in the accent colour
   $lg = New-Logo 18 14; Add-DragHandle $lg $f; $f.Controls.Add($lg)
   $t = New-Label $title (New-Object Drawing.Font('Segoe UI Semibold', 14)) $script:C.Accent 58 15 ($w - 110) 28; Add-DragHandle $t $f; $f.Controls.Add($t)
-  $x = New-Btn ([string][char]0x00D7) ($w - 48) 12 30 30 'ghost' (New-Object Drawing.Font('Segoe UI', 15)); $x.Add_Click({ param($s, $e) $s.FindForm().Close() }); $f.Controls.Add($x)
+  $x = New-Btn '' ($w - 50) 13 32 32 'ghost'; $x.Glyph = 'close'; $x.Add_Click({ param($s, $e) $s.FindForm().Close() }); $f.Controls.Add($x)
   $f.Add_KeyDown({ param($s, $e) if ($e.KeyCode -eq 'Escape') { $s.Close() } })
   $f.Add_Shown({ param($s, $e) $s.Activate(); Start-OpenAnimation $s })
   return $f
@@ -163,6 +208,34 @@ function Show-MiseSettings {
   $W = 380; $M = 18
   $f = New-MiseDialog 'Settings' $W 520
   $y = 56
+  # the look: six small previews of each backdrop, the chosen one ringed; the logo stays copper in all of them
+  $f.Controls.Add((New-Label 'LOOK' $script:fTiny $script:C.Muted $M $y 200 14)); $y += 20
+  $curT = Get-MiseTheme $cfg; $lk = @(); $x = $M; $tw = [int](($W - 2 * $M - 5 * 6) / 6)
+  foreach ($k in $script:Themes.Keys) {
+    $p = New-Object Windows.Forms.Panel; $p.Size = New-Object Drawing.Size($tw, 58); $p.Location = New-Object Drawing.Point($x, $y); $p.Cursor = 'Hand'; $p.BackColor = $script:C.Bg
+    $prev = [MiseGlass]::Render($k, ($tw - 6), 34)
+    if ($k -eq 'ember') { $gg = [Drawing.Graphics]::FromImage($prev); $gg.Clear([Drawing.Color]::FromArgb(23, 23, 26)); $gg.Dispose() }
+    $p.Tag = @{ Key = $k; Sel = ($k -eq $curT); Img = $prev; Name = $script:Themes[$k].Name; Short = $(if ($k -eq 'midnight') { 'Midnight' } else { $script:Themes[$k].Name }); Line = (ConvertTo-Color $script:Themes[$k].Line) }
+    [Windows.Forms.Control].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'NonPublic,Instance').SetValue($p, $true, $null)
+    $p.Add_Paint({ param($s, $e)
+      $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'; $g.TextRenderingHint = 'ClearTypeGridFit'; $t = $s.Tag
+      $r = New-Object Drawing.Rectangle(3, 3, ($s.Width - 6), 34)
+      $g.DrawImage($t.Img, $r)
+      # a tiny frosted row and the copper dot: how the look feels
+      $rb = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb($(if ($t.Key -eq 'ember') { 255 } else { 30 }), $(if ($t.Key -eq 'ember') { 33 } else { 255 }), $(if ($t.Key -eq 'ember') { 33 } else { 255 }), $(if ($t.Key -eq 'ember') { 37 } else { 255 })))
+      $g.FillRectangle($rb, 9, 21, ($s.Width - 18), 9); $rb.Dispose()
+      $cb = New-Object Drawing.SolidBrush($script:LogoCopper); $g.FillEllipse($cb, 9, 9, 7, 7); $cb.Dispose()
+      $pen = New-Object Drawing.Pen($(if ($t.Sel) { $script:C.Accent } else { $t.Line }), $(if ($t.Sel) { 2 } else { 1 })); $g.DrawRectangle($pen, 2, 2, ($s.Width - 5), 35); $pen.Dispose()
+      $sf = New-Object Drawing.StringFormat; $sf.Alignment = 'Center'; $sf.Trimming = 'EllipsisCharacter'; $sf.FormatFlags = 'NoWrap'
+      $tb = New-Object Drawing.SolidBrush($(if ($t.Sel) { $script:C.Text } else { $script:C.Muted })); $fl = $script:fTiny; $mw = $g.MeasureString($t.Short, $fl).Width; if ($mw -gt $s.Width - 2) { $fl = New-Object Drawing.Font('Segoe UI Semibold', ([single][Math]::Max(5.5, 8 * ($s.Width - 2) / $mw))) }
+      $g.DrawString($t.Short, $fl, $tb, (New-Object Drawing.RectangleF(0, 41, $s.Width, 16)), $sf); $tb.Dispose(); $sf.Dispose()
+    })
+    $p.Add_Click({ param($s, $e) foreach ($q in $script:lookTiles) { $q.Tag.Sel = $false; $q.Invalidate() }; $s.Tag.Sel = $true; $s.Invalidate(); $null = Set-MiseSetting 'theme' $s.Tag.Key })
+    $tipL = New-Object Windows.Forms.ToolTip; $tipL.SetToolTip($p, "$($script:Themes[$k].Name) - applies when this window closes")
+    $f.Controls.Add($p); $lk += $p; $x += $tw + 6
+  }
+  $script:lookTiles = $lk
+  $y += 66
   $f.Controls.Add((New-Label 'ACCENT COLOUR' $script:fTiny $script:C.Muted $M $y 200 14)); $y += 20
   $sw = @(); $x = $M; $cur = "$(Get-MiseSetting $cfg 'accent')".ToUpper()
   foreach ($k in $script:AccentChoices.Keys) {
@@ -208,8 +281,8 @@ function Show-MiseSettings {
     else { [Windows.Forms.MessageBox]::Show($r.Message, 'Mise') | Out-Null } })
   $y += 44
   $f.Controls.Add((New-Label 'SCREENS' $script:fTiny $script:C.Muted $M $y 200 14)); $y += 20
-  $bScr = New-Btn 'Name screens' $M $y $cw 32; $bScr.Add_Click({ $script:settingsAction = 'screens'; $f.Close() }); $y += 40
-  $tipS = New-Object Windows.Forms.ToolTip; $tipS.SetToolTip($bScr, 'Name each screen again (after adding or moving one). Routines stay.')
+  $bScr = New-Btn 'Rename screens' $M $y $cw 32; $bScr.Add_Click({ $script:settingsAction = 'screens'; $f.Close() }); $y += 40
+  $tipS = New-Object Windows.Forms.ToolTip; $tipS.SetToolTip($bScr, 'Mise names screens by itself (place and model). Give them your own names here. Routines stay.')
   $f.Controls.Add((New-Label 'TROUBLESHOOTING' $script:fTiny $script:C.Muted $M $y 200 14)); $y += 20
   $hw = [int](($cw - 8) / 2)
   $bFix = New-Btn 'Fix League client' $M $y $hw 32; $bRes = New-Btn 'Restart Mise' ($M + $hw + 8) $y $hw 32; $y += 40
@@ -294,6 +367,20 @@ function Show-MiseInput([string]$title, [string]$label, [string]$value = '') {
   $f.ClientSize = New-Object Drawing.Size($W, $y)
   [void]$f.ShowDialog()
   return $script:inputResult
+}
+
+# ---------- what's new: shown once in the Mise window after an update ----------
+function Show-WhatsNew {
+  $W = 420; $M = 22; $cw = $W - 2 * $M
+  $f = New-MiseDialog "New in Mise $($script:MiseVersion)" $W 200; $y = 60
+  foreach ($l in @($script:WhatsNew)) {
+    $f.Controls.Add((New-Label ([string][char]0x2022) $script:fSmall $script:C.Accent $M $y 14 18))
+    $f.Controls.Add((New-Label "$l" $script:fSmall $script:C.Text ($M + 16) $y ($cw - 16) 36)); $y += 42
+  }
+  $ok = New-Btn 'OK' $M ($y + 2) $cw 36 'primary'; $ok.Add_Click({ $f.Close() }); $f.Controls.Add($ok); $y += 38 + 18
+  $f.Add_KeyDown({ param($s, $e) if ($e.KeyCode -in 'Enter', 'Escape') { $f.Close() } })
+  $f.ClientSize = New-Object Drawing.Size($W, $y)
+  [void]$f.ShowDialog()
 }
 
 # ---------- feedback (bug or wish; sends only what the user typed plus version, Windows build and screen count) ----------
@@ -474,8 +561,8 @@ function Show-AccountWizard {
 
 # ---------- first run: screens, apps Mise found, a suggested layout, League accounts ----------
 function Show-FirstRun($cfg) {
-  # first launch: name the screens; the intro and the empty home view take it from there
-  $cfg = Show-MonitorWizard $cfg
+  # first launch: screens are named by themselves (Rename screens in Settings changes them); the intro takes it from there
+  $cfg = (Update-AutoMonitors $cfg).Cfg
   $cfg.firstRunDone = $true
   Save-MiseConfig $cfg
   return $cfg

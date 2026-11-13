@@ -1,6 +1,6 @@
 ﻿# Mise (shared edition) - core library. Dot-sourced by the runner, the tray and the builder.
 # Everything the routines can do lives here, driven by a JSON config:  %APPDATA%\Mise\config.json
-$script:MiseVersion = '0.6.5'
+$script:MiseVersion = '0.7.0'
 # feedback goes to a Google Form (no account needed); filled in when the form exists ('' = keep entries in a local queue)
 $script:FeedbackForm = ''
 $script:FeedbackFields = @{ type = ''; message = ''; name = ''; info = '' }
@@ -16,6 +16,7 @@ $script:DefaultSettings = [ordered]@{
   autoAccept = $false; champPage = $true         # League helpers (tray): u.gg page of your champion is on by default
   queue = 2400                                    # one global lobby after login (queue id, 0 = none)
   accent = '#D8895A'                              # copper; users can pick another accent
+  theme = 'ember'                                 # look: ember | midnight | aurora | emberglass | deepsea | nebula
   animations = $true
   toastCorner = 'bottom-left'                     # bottom-left | bottom-right | top-left | top-right
   homePos = 'remember'                            # remember | top-left | top-center | top-right | center | bottom-left | bottom-right
@@ -25,6 +26,8 @@ $script:DefaultSettings = [ordered]@{
   lastUpdateCheck = ''
   introDone = $false                              # the short intro was shown once
   autoExit = $true                                # a League routine exits by itself when the League client closes
+  accountPrefs = $null                            # per account: its own lobby (queue) and a routine that starts with it
+  lastSeenVersion = ''                            # the version whose What's new was shown
   optsOpen = $true                                # Options section unfolded in the Mise window
 }
 function New-MiseConfig { [pscustomobject]@{ version = 4; firstRunDone = $false; monitors = @(); routines = @(); settings = [pscustomobject]$script:DefaultSettings } }
@@ -71,8 +74,48 @@ function Get-MiseConfig {
   }
 }
 # which routine is running now (set when a routine starts or is arranged, cleared when it exits)
+# shown once after an update (in the Mise window); keep it to what a user will notice
+$script:WhatsNew = @(
+  'Six looks in Settings: Ember and five glass ones (Midnight Glass, Aurora, Ember Glass, Deep Sea, Nebula).'
+  'A tidier tray menu: what is running sits on top with its Exit button, and Re-arrange is one click away.'
+  'The progress pop-up is a small pill; point at it for the step list. It opens by itself for a problem or a League update.'
+  'When League is updating, Mise waits and says so instead of pressing Play.'
+  'New motion: the window rises in, rows react to the mouse, the account frame glides when you switch.'
+  'Starting a routine while another is on switches to it: the old one exits first.'
+  'A routine can start by itself when its game opens (Edit routines > Start with a program).'
+  'Each League account can have its own lobby and routine (the ... menu on the account).'
+  "A friend's Discord stream opens on its own tile; it can open with the sound off."
+  'A problem in the progress pop-up has a Fix button with the one action that fixes it.'
+  'Screens name themselves; right-click a tile in Edit routines for Quick size.'
+)
+# per-account choices: its own lobby (queue id) and a routine that starts with it. Nothing set = the general lobby, no routine.
+function Get-AccountPref($cfg, [string]$name) {
+  try { $p = $cfg.settings.accountPrefs; if ($p -and @($p.PSObject.Properties.Name) -contains $name) { return $p.$name } } catch {}
+  return $null
+}
+function Get-AccountQueue($cfg, [string]$name) {
+  $p = $(if ($name) { Get-AccountPref $cfg $name } else { $null })
+  if ($p -and @($p.PSObject.Properties.Name) -contains 'queue' -and $null -ne $p.queue -and "$($p.queue)" -ne '') { return [int]$p.queue }
+  return [int](Get-MiseSetting $cfg 'queue')
+}
+function Get-AccountRoutine($cfg, [string]$name) {
+  $p = Get-AccountPref $cfg $name; if (-not $p -or -not "$($p.routine)") { return $null }
+  return ($cfg.routines | Where-Object { $_.id -eq "$($p.routine)" } | Select-Object -First 1)
+}
+function Set-AccountPref([string]$name, [string]$key, $value) {
+  $cfg = Get-MiseConfig
+  if (-not (@($cfg.settings.PSObject.Properties.Name) -contains 'accountPrefs') -or -not $cfg.settings.accountPrefs) { $cfg.settings | Add-Member -NotePropertyName accountPrefs -NotePropertyValue ([pscustomobject]@{}) -Force }
+  $all = $cfg.settings.accountPrefs
+  if (-not (@($all.PSObject.Properties.Name) -contains $name)) { $all | Add-Member -NotePropertyName $name -NotePropertyValue ([pscustomobject]@{ queue = $null; routine = '' }) }
+  $e = $all.$name
+  if (@($e.PSObject.Properties.Name) -contains $key) { $e.$key = $value } else { $e | Add-Member -NotePropertyName $key -NotePropertyValue $value }
+  Save-MiseConfig $cfg
+  return $cfg
+}
+function Get-ActiveAccountName { try { $f = Join-Path $env:USERPROFILE 'LeagueAccounts\_active.txt'; if (Test-Path $f) { return (Get-Content -LiteralPath $f -Raw).Trim() } } catch {}; return '' }
 function Get-ActiveRoutineId { $f = Join-Path $script:DataDir '_active-routine.txt'; if (Test-Path $f) { try { return (Get-Content -LiteralPath $f -Raw).Trim() } catch {} }; return '' }
-function Set-ActiveRoutineId([string]$id) { $f = Join-Path $script:DataDir '_active-routine.txt'; if ($id) { Set-Content -LiteralPath $f -Value $id -Encoding UTF8 } else { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }
+# the file's time is when the routine went on (the tray shows how long): written only when the routine changes
+function Set-ActiveRoutineId([string]$id) { $f = Join-Path $script:DataDir '_active-routine.txt'; if ($id) { if ((Get-ActiveRoutineId) -ne $id) { Set-Content -LiteralPath $f -Value $id -Encoding UTF8 } } else { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }
 
 # the last 5 good versions of the settings file live in %APPDATA%\Mise\backups (at most one every 10 minutes)
 function Backup-MiseConfig {
@@ -317,13 +360,15 @@ function Save-ExitTrack($routine, $ctx) {
   foreach ($e in (@($ctx.Track) + @($old) | Where-Object { $_ })) { $k = [int64]$e.h; if ($seen[$k] -or -not [MiseWin]::IsWindow([IntPtr]$k)) { continue }; $seen[$k] = 1; $all += $e }
   if ($all.Count) { Set-Content -LiteralPath $f -Value (ConvertTo-Json @($all) -Depth 5) -Encoding UTF8 } else { Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue }
 }
-function Invoke-ExitTrack($routine) {
+function Invoke-ExitTrack($routine, $keepNames = @()) {
   $f = Join-Path $script:DataDir "_exit-$($routine.id).json"
   if (-not (Test-Path $f)) { return }
   $items = @(); try { $items = @(Get-Content -LiteralPath $f -Raw | ConvertFrom-Json) } catch {}
   foreach ($t in $items) {
     $h = [IntPtr][int64]$t.h
     if (-not [MiseWin]::IsWindow($h)) { continue }
+    # switching routines: a window the next routine also uses is left alone
+    if (@($keepNames) -contains "$($t.name)") { continue }
     # the handle must still belong to the same program, else it is someone else's window now
     if ($t.proc) { $pn = ''; try { $pn = Get-ProcName ([MiseWin2]::Pid($h)) } catch {}; if ($pn -ne $t.proc) { continue } }
     if ($t.mode -eq 'close') { [MiseWin]::Close($h); Say "[$($t.name)] closed" }
