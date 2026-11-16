@@ -72,11 +72,22 @@ public class MiseWin2 {
     if (DwmGetWindowAttribute(h, 9, out r, Marshal.SizeOf(typeof(RECT))) != 0) { if (!GetWindowRect(h, out r)) return null; }
     return new int[] { r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top };
   }
-  // the smallest size the app accepts: shrink it for a moment, read what it allowed, put it back
+  // wait until the window stops changing size (some apps, like the Spotify mini player, correct their size a moment after a resize)
+  static int[] Settled(IntPtr h) {
+    int[] last = Visible(h); int same = 0;
+    for (int i = 0; i < 16 && same < 3; i++) {
+      System.Threading.Thread.Sleep(70);
+      int[] v = Visible(h);
+      if (v != null && last != null && v[2] == last[2] && v[3] == last[3]) same++; else same = 0;
+      last = v;
+    }
+    return last;
+  }
+  // the smallest size the app accepts: shrink it for a moment, read what it settled on, put it back
   public static int[] ProbeMinSize(IntPtr h) {
     RECT wr; if (!GetWindowRect(h, out wr)) return null;
     SetWindowPos(h, IntPtr.Zero, 0, 0, 1, 1, 0x0016);
-    int[] v = Visible(h);
+    int[] v = Settled(h);
     SetWindowPos(h, IntPtr.Zero, wr.Left, wr.Top, wr.Right - wr.Left, wr.Bottom - wr.Top, 0x0014);
     if (v == null) return null;
     return new int[] { v[2], v[3] };
@@ -85,8 +96,7 @@ public class MiseWin2 {
   public static int[] ProbeMaxSize(IntPtr h) {
     RECT wr; if (!GetWindowRect(h, out wr)) return null;
     SetWindowPos(h, IntPtr.Zero, 0, 0, 20000, 20000, 0x0016);
-    System.Threading.Thread.Sleep(120);
-    int[] v = Visible(h);
+    int[] v = Settled(h);
     SetWindowPos(h, IntPtr.Zero, wr.Left, wr.Top, wr.Right - wr.Left, wr.Bottom - wr.Top, 0x0014);
     if (v == null) return null;
     return new int[] { v[2], v[3] };

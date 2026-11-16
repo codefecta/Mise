@@ -7,7 +7,16 @@ Everything in its place before you play. Mise switches League accounts in one cl
 ## Quick guide
 
 ### 1. First run
-Each screen lights up with a copper frame: give it a name ("Main", "Side"). Then Mise opens its window. Updates are automatic: Mise downloads new versions in the background and installs them when League and Mise aren't in use, never mid-game.
+Mise names your screens by itself, then a short setup walks you through it, one real step at a time:
+1. **Do you play League?** *No* hides accounts and League options (Settings > **League parts** brings them back).
+2. **Add your League account** (see below).
+3. **Make your first routine**: open your apps, put each window where you like it, press **Copy my screen**, name it, save.
+4. **Try it**: move a window out of place and press **Run**. The progress pop-up opens its step list by itself this first time.
+5. **Where Mise lives**: the tray icon near the clock, your routine's hotkey, and Re-arrange.
+
+Every step can be skipped. The first time you open **Edit routines**, a short tour shows the map, the buttons and a tile; small tips show once when you first resize a tile, change something (Ctrl+Z) or add Spotify. **About > Replay setup** runs the setup again and brings the tour and tips back.
+
+Updates are automatic: Mise downloads new versions in the background and installs them when League and Mise aren't in use, never mid-game.
 
 ### 2. Add your League accounts
 Press **+ Account** (under Tools). It walks you through three steps:
@@ -62,7 +71,7 @@ Handy: **+ Add app or page** adds any installed app or a web page. Click a tile 
 - **Re-arrange '<name>'** puts the last routine's windows back in place without starting anything.
 
 ### The other buttons
-- **League options** (when League is installed): auto-accept match, lobby after login (pick from the list), open u.gg for your champion.
+- **League options** (when League is installed): auto-accept match (turning it on slides out a slider: accept right away or up to 10 s after the match pops), lobby after login (pick from the list), open u.gg for your champion.
 - **Gear (top right)**: **Look** (Ember, or one of five glass looks: Midnight Glass, Aurora, Ember Glass, Deep Sea, Nebula; the logo stays copper in all of them), accent colour, progress pop-up corner, where the Mise window sits, check for updates, **Rename screens** (Mise names screens by itself, e.g. "Main - MAG 274Q X24"; a newly plugged-in screen is named automatically), **Fix League client** (if the client opens blank or stuck), **Restart Mise**, **Start over** (first-time setup again; League accounts stay), **Uninstall Mise** (routines, settings and accounts stay), About.
 - **Motion**: opening Mise plays a short logo animation, the window rises in and the rows slide in. Rows lift a little under the mouse (a play button slides in on routines), switches spring, and when you click another account the copper frame glides over to it with a "switching..." line. In Edit routines a dragged tile lifts with a shadow, leaves a faint ghost where it came from, shows copper guide lines when its edges line up with another tile and settles with a small bounce ("snapped"). Gear > *Animations* off turns all motion off.
 - **Tray**: left-click for the menu, double-click opens Mise. A compact menu in the current look: on top what is running with its **Exit** (or **Stop** while it starts), Open Mise, **Re-arrange** your last routine, the update when one is ready, your routines with their hotkeys, Switch account (the logged-in account has a check), Edit routines, Restart Mise and *Quit Mise* (closes everything). The League options live in the Mise window.

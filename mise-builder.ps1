@@ -31,7 +31,7 @@ $homeUi = Join-Path $script:MiseDir 'mise-home.ps1'
 # ======================= helpers =======================
 function Copy-Routine($r) { return ((ConvertTo-Json $r -Depth 10) | ConvertFrom-Json) }
 function New-BlankRoutine {
-  return [pscustomobject]@{ id = (New-Id); name = 'My routine'; hotkey = (Get-FreeHotkey $script:cfg ''); league = [bool](Test-RiotInstalled); taskbar = @(); card = $null; tiles = @() }
+  return [pscustomobject]@{ id = (New-Id); name = 'My routine'; hotkey = (Get-FreeHotkey $script:cfg ''); league = [bool](Test-LeagueOn); taskbar = @(); card = $null; tiles = @() }
 }
 function Get-Tiles { return @($script:R.tiles) }
 function Get-Tile([string]$id) { return (@($script:R.tiles) | Where-Object { $_.id -eq $id } | Select-Object -First 1) }
@@ -200,9 +200,9 @@ function Set-Routine($r) {
   foreach ($k in @('tiles', 'taskbar')) { $script:R.$k = @($script:R.$k | Where-Object { $_ }) }
   # mini player tiles saved before Mise knew its limits get them now (and are shrunk or grown to fit)
   foreach ($t in @($script:R.tiles)) {
-    if ($t.kind -eq 'spotify' -and $t.mini -and -not $t.maxW) {
+    if ($t.kind -eq 'spotify' -and $t.mini) {
       $ml = Get-MiniLimits
-      if ($ml) {
+      if ($ml -and ($t.minW -ne $ml.MinW -or $t.minH -ne $ml.MinH -or $t.maxW -ne $ml.MaxW -or $t.maxH -ne $ml.MaxH)) {
         foreach ($kv in @(@('minW', $ml.MinW), @('minH', $ml.MinH), @('maxW', $ml.MaxW), @('maxH', $ml.MaxH))) { $t | Add-Member -NotePropertyName $kv[0] -NotePropertyValue $kv[1] -Force }
         $mon = @(Get-LiveMonitors $script:cfg) | Where-Object { $_.id -eq $t.monitor } | Select-Object -First 1
         if ($mon) { $t.rect = Set-MinSize $t.rect (Get-MinFrac $t (Get-TileArea $mon $script:R)); $script:dirty = $true }
@@ -554,6 +554,7 @@ $canvas.Add_MouseUp({ param($s, $e)
       $bounceTimer.Start()
     }
     Update-Side; $canvas.Invalidate()
+    if ($d.Mode -in 'move', 'edge' -and ($d.Mode -eq 'edge' -or $d.Moved)) { Show-MapHint $d }
   } })
 $script:bounce = $null
 $bounceTimer = New-Object Windows.Forms.Timer; $bounceTimer.Interval = 15
@@ -682,6 +683,10 @@ function Update-Side {
 
   # the selected tile
   $t = if ($script:sel -and $script:sel -ne 'card') { Get-Tile $script:sel } else { $null }
+  if ($t -and $t.kind -eq 'spotify' -and -not (Test-HintSeen 'spotify')) {
+    # first Spotify tile: what the mini player is (shown a moment later, not in the middle of building the panel)
+    $ht = New-Object Windows.Forms.Timer; $ht.Interval = 300; $ht.Add_Tick({ param($s, $e) $s.Stop(); $s.Dispose(); Show-MiseHint $form (Get-ScreenRect $side) 'spotify' 'Spotify can open as its small mini player, always on top. Turn on Mini player here on the right.' }); $ht.Start()
+  }
   if ($t) {
     $null = Add-SideLabel 'TILE' $script:fTiny $script:C.Muted 20
     $null = Add-SideLabel $t.name $script:fBig $script:C.Text 28
@@ -985,7 +990,42 @@ if (-not $New) {
 Do-Layout
 Set-Routine $(if ($start) { Copy-Routine $start } else { New-BlankRoutine })
 if (-not $start) { $script:dirty = $false }
-$form.Add_Shown({ $form.Activate(); Start-OpenAnimation $form; Do-Layout })
+function Get-ScreenRect($ctrls) {
+  $r = $null
+  foreach ($c in @($ctrls)) { $q = $c.RectangleToScreen($c.ClientRectangle); $r = $(if ($r) { [Drawing.Rectangle]::Union($r, $q) } else { $q }) }
+  return $r
+}
+function Show-BuilderTour {
+  $null = Set-MiseSetting 'tourDone' $true
+  $stops = @(
+    @{ T = 'These are your screens'; B = 'Each big box is one of your screens, laid out like on your desk. Each tile inside is a window, drawn where it will open.'; Rect = { Get-ScreenRect $canvas } },
+    @{ T = 'Add windows'; B = 'Copy my screen takes the windows that are open right now. + Add app or page picks one from a list: an app, or a web page.'; Rect = { Get-ScreenRect @($bCopy, $bAdd) } },
+    @{ T = 'Move and resize a tile'; B = 'Drag a tile to move it. Drag an edge or a corner to resize; it snaps to the other windows. Right-click a tile for quick sizes, rename or remove.'; Rect = {
+        # the biggest window on the map (a small one like the Spotify mini player is hard to see)
+        $best = $null; $bx = $null
+        foreach ($t in @(Get-Tiles)) { $v = Get-ViewFor $t.monitor; if (-not $v) { continue }; $q = Get-TileBox $v $t.rect; if (-not $bx -or $q.Width * $q.Height -gt $bx.Width * $bx.Height) { $best = $t; $bx = $q } }
+        if (-not $best) { return $null }
+        $p = $canvas.PointToScreen((New-Object Drawing.Point([int]$bx.X, [int]$bx.Y)))
+        return (New-Object Drawing.Rectangle($p.X, $p.Y, [int]$bx.Width, [int]$bx.Height)) } },
+    @{ T = 'Settings for the routine and its windows'; B = 'Here: the hotkey, logging in to League and more. Click a tile to see its own settings, like what it does when the routine exits.'; Rect = { Get-ScreenRect $side } },
+    @{ T = 'Test run, then Save'; B = 'Test run arranges your screens now, without saving. Save keeps the routine. Made a mistake? Ctrl+Z undoes the last change.'; Rect = { Get-ScreenRect @($bUndo, $bTest, $bSave, $bSaveC) } }
+  )
+  Show-MiseTour $form $stops
+}
+# one-time tips on the map: resizing, then undo
+function Show-MapHint($d) {
+  try {
+    $t = $d.Hit.Tile
+    $anchor = Get-ScreenRect $canvas
+    if ($t) { $v = Get-ViewFor $t.monitor; if ($v) { $bx = Get-TileBox $v $t.rect; $p = $canvas.PointToScreen((New-Object Drawing.Point([int]$bx.X, [int]$bx.Y))); $anchor = New-Object Drawing.Rectangle($p.X, $p.Y, [int]$bx.Width, [int]$bx.Height) } }
+    if ($d.Mode -eq 'edge' -and -not (Test-HintSeen 'resize')) { Show-MiseHint $form $anchor 'resize' 'Edges snap to the windows next to them. Right-click a tile for quick sizes.'; return }
+    if (@($script:undo.Items).Count -gt 0 -and -not (Test-HintSeen 'undo')) { Show-MiseHint $form (Get-ScreenRect $bUndo) 'undo' 'Made a mistake? Ctrl+Z undoes it, one step at a time.' }
+  } catch {}
+}
+$form.Add_Shown({ $form.Activate(); Start-OpenAnimation $form; Do-Layout
+  # the first time: a short tour of the window
+  if (-not [bool](Get-MiseSetting (Get-MiseConfig) 'tourDone')) { $tt = New-Object Windows.Forms.Timer; $tt.Interval = 600; $tt.Add_Tick({ param($s, $e) $s.Stop(); $s.Dispose(); Show-BuilderTour }); $tt.Start() }
+})
 [void]$form.ShowDialog()
 try { $mutex.ReleaseMutex() } catch {}
 # back to the Mise window

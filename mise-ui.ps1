@@ -1,4 +1,4 @@
-﻿# Mise (shared edition) - UI helpers: monitor naming, first run, account chooser, dialogs, settings, intro.
+﻿# Mise (shared edition) - UI helpers: monitor naming, first run, account chooser, dialogs, settings, setup, tips, tours.
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'mise-core.ps1')
 . (Join-Path $script:MiseDir 'mise-layout.ps1'); . (Join-Path $script:MiseDir 'mise-engine.ps1')
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, Microsoft.VisualBasic
@@ -258,6 +258,12 @@ function Show-MiseSettings {
   $cw = $W - 2 * $M
   $bAnim = New-Btn 'Animations' $M $y $cw 38 'setting'; $bAnim.IsSwitch = $true; $bAnim.On = [bool](Get-MiseSetting $cfg 'animations'); $y += 44
   $bAnim.Add_Click({ param($s, $e) $s.On = -not $s.On; $s.Invalidate(); $null = Set-MiseSetting 'animations' $s.On })
+  $bLp = $null
+  if (Test-RiotInstalled) {
+    $bLp = New-Btn 'League parts' $M $y $cw 38 'setting'; $bLp.IsSwitch = $true; $bLp.On = [bool](Get-MiseSetting $cfg 'leagueParts'); $y += 44
+    $bLp.Add_Click({ param($s, $e) $s.On = -not $s.On; $s.Invalidate(); $null = Set-MiseSetting 'leagueParts' $s.On })
+    $tipLp = New-Object Windows.Forms.ToolTip; $tipLp.SetToolTip($bLp, 'Off: League accounts and League options are hidden, for using Mise only for your windows.')
+  }
   $bCorner = New-Btn 'Progress pop-up' $M $y $cw 38 'setting'; $bCorner.Tag = "$(Get-MiseSetting $cfg 'toastCorner')"; $bCorner.Chip = $script:CornerNames[$bCorner.Tag]; $y += 40
   $bCorner.Add_Click({ param($s, $e) Show-PickMenu $s $script:CornerNames { param($k) $null = Set-MiseSetting 'toastCorner' $k } })
   $f.Controls.Add((New-Label 'Used when a routine has no pop-up spot of its own.' $script:fSmall $script:C.Muted ($M + 2) $y $cw 18)); $y += 24
@@ -294,7 +300,7 @@ function Show-MiseSettings {
   $bUn = New-Btn 'Uninstall Mise' ($M + $hw + 8) $y $hw 30 'ghost'; $bUn.Add_Click({ $script:settingsAction = 'uninstall'; $f.Close() }); $y += 36
   $tipS.SetToolTip($bUn, 'Remove Mise from this PC. Routines, settings and League accounts stay, so a new install picks them up.')
   $bAbout = New-Btn 'About Mise' $M $y $cw 30 'ghost'; $bAbout.Add_Click({ $script:settingsAction = 'about'; $f.Close() }); $y += 38
-  $ctl = @($bAnim, $bCorner, $bPos, $bMon, $bChk, $bScr, $bFix, $bRes, $bOver, $bUn, $bAbout)
+  $ctl = @(@($bAnim, $bLp) | Where-Object { $_ }) + @($bCorner, $bPos, $bMon, $bChk, $bScr, $bFix, $bRes, $bOver, $bUn, $bAbout)
   # Send feedback shows once the feedback form exists
   if ($script:FeedbackForm) { $bFb = New-Btn 'Send feedback' $M $y $cw 30 'ghost'; $bFb.Add_Click({ $script:settingsAction = 'feedback'; $f.Close() }); $ctl += $bFb; $y += 38 }
   $done = New-Btn 'Done' $M $y $cw 36 'primary'; $done.Add_Click({ $f.Close() }); $y += 36 + 18
@@ -552,6 +558,7 @@ function Show-AccountWizard {
     if ($p.ExitCode -eq 0) {
       $nick.Text = ''; & $show 4
       $stepL.Text = 'SAVED'; $head.Text = "$full is ready"; $body.Text = 'Riot Client is back on its login screen. Add the next account, or press Done.'
+      if (@(Get-RiotAccounts).Count -eq 2) { $body.Text += ' Click an account in the Mise window to switch to it, even while another one is logged in.' }
     } else { $body.Text = "Could not save. Is Riot Client open and logged in, with 'Stay signed in' ticked?" }
   })
   # Riot Client already running: skip straight to logging in
@@ -578,36 +585,361 @@ function New-EmptyCard([string]$text, [string]$btnText, [scriptblock]$onClick, [
   return $p
 }
 
-# ---------- intro: four short pages, once, from the Mise window ----------
-$script:IntroPages = @(
-  @{ T = 'Welcome to Mise'; B = "Mise opens your apps and puts every window in its place - with one click or one hotkey." },
-  @{ T = 'Routines'; B = "A routine is your setup: which apps and web pages open, and where each window goes.`r`n`r`nMake one in Edit routines: place your windows roughly, then press Copy my screen. Fine-tune it on the map." },
-  @{ T = 'League'; B = "Click an account to log in, or to switch if another account is open.`r`n`r`nA routine with League in it asks which account, then starts the client and your lobby while it arranges the rest." },
-  @{ T = 'Make it yours'; B = "Settings: accent colour, animations and where this window opens.`r`n`r`nThe tray icon near the clock has your routines and accounts too." }
+# ---------- first-time setup: each step is done for real and it ends with a working routine ----------
+# welcome > League? > account > first routine (Copy my screen) > try it > where Mise lives. Every step can be skipped.
+$script:SetupDemo = @(
+  @{ N = 'League'; C = [Drawing.Color]::FromArgb(200, 170, 110); M = @(0.18, 0.08, 0.52, 0.60); P = @(0.00, 0.00, 0.66, 0.91) },
+  @{ N = 'Discord'; C = [Drawing.Color]::FromArgb(140, 147, 232); M = @(0.04, 0.30, 0.40, 0.48); P = @(0.66, 0.00, 0.34, 0.55) },
+  @{ N = 'Browser'; C = [Drawing.Color]::FromArgb(156, 184, 224); M = @(0.46, 0.22, 0.46, 0.52); P = @(0.66, 0.55, 0.34, 0.36) },
+  @{ N = 'Spotify'; C = [Drawing.Color]::FromArgb(127, 199, 143); M = @(0.58, 0.04, 0.30, 0.13); P = @(0.02, 0.76, 0.24, 0.12) }
 )
-function Show-Intro {
-  $W = 400; $M = 18
-  $f = New-MiseDialog 'Mise' $W 250
-  $script:introI = 0
-  $head = New-Label '' $script:fBig $script:C.Text $M 54 ($W - 2 * $M) 26
-  $body = New-Label '' $script:fSmall $script:C.Muted $M 86 ($W - 2 * $M) 100
-  $dots = New-Label '' $script:fSmall $script:C.Accent $M 196 120 20
-  $bSkip = New-Btn 'Skip' ($W - $M - 220) 192 100 32 'ghost'
-  $bNext = New-Btn 'Next' ($W - $M - 110) 192 110 32 'primary'
-  $f.Controls.AddRange(@($head, $body, $dots, $bSkip, $bNext))
-  $show = {
-    $p = $script:IntroPages[$script:introI]; $head.Text = $p.T; $body.Text = $p.B
-    $dots.Text = (@(for ($k = 0; $k -lt $script:IntroPages.Count; $k++) { if ($k -eq $script:introI) { [string][char]0x25CF } else { [string][char]0x25CB } }) -join ' ')
-    $bNext.Text = $(if ($script:introI -eq $script:IntroPages.Count - 1) { 'Start' } else { 'Next' }); $bNext.Invalidate()
+# a clickable choice: a bold line and a grey line, copper border when the mouse is on it
+function New-SetupChoice([string]$title, [string]$sub, $x, $y, $w) {
+  $p = New-Object Windows.Forms.Panel; $p.Location = New-Object Drawing.Point($x, $y); $p.Size = New-Object Drawing.Size($w, 58); $p.BackColor = $script:C.Panel; $p.Cursor = 'Hand'
+  $p.Tag = @{ Hot = $false }
+  $p.Add_Paint({ param($s, $e) $pen = New-Object Drawing.Pen($(if ($s.Tag.Hot) { $script:C.Accent } else { $script:C.Line }), 1); $e.Graphics.DrawRectangle($pen, 0, 0, $s.Width - 1, $s.Height - 1); $pen.Dispose() })
+  $t = New-Label $title $script:fBig $script:C.Text 14 9 ($w - 28) 22; $t.BackColor = $script:C.Panel
+  $d = New-Label $sub $script:fSmall $script:C.Muted 14 32 ($w - 28) 18; $d.BackColor = $script:C.Panel
+  $p.Controls.AddRange(@($t, $d))
+  foreach ($c in @($p, $t, $d)) {
+    $c.Cursor = 'Hand'
+    $c.Add_MouseEnter({ param($s, $e) $q = $(if ($s -is [Windows.Forms.Panel]) { $s } else { $s.Parent }); $q.Tag.Hot = $true; $q.Invalidate() })
+    $c.Add_MouseLeave({ param($s, $e) $q = $(if ($s -is [Windows.Forms.Panel]) { $s } else { $s.Parent }); $q.Tag.Hot = $false; $q.Invalidate() })
   }
-  & $show
-  $bNext.Add_Click({ if ($script:introI -ge $script:IntroPages.Count - 1) { $f.Close() } else { $script:introI++; & $show } })
-  $bSkip.Add_Click({ $f.Close() })
+  return @{ Panel = $p; Parts = @($p, $t, $d) }
+}
+# a short explanation with a copper bar on its left
+function New-SetupNote([string]$text, $x, $y, $w, $h) {
+  $p = New-Object Windows.Forms.Panel; $p.Location = New-Object Drawing.Point($x, $y); $p.Size = New-Object Drawing.Size($w, $h); $p.BackColor = $script:C.Panel
+  $p.Add_Paint({ param($s, $e) $b = New-Object Drawing.SolidBrush($script:C.Accent); $e.Graphics.FillRectangle($b, 0, 0, 3, $s.Height); $b.Dispose() })
+  $l = New-Label $text $script:fSmall $script:C.Text 14 8 ($w - 24) ($h - 12); $l.BackColor = $script:C.Panel; $p.Controls.Add($l)
+  return $p
+}
+function Show-Setup {
+  $W = 460; $M = 18; $cw = $W - 2 * $M; $H = 560
+  $f = New-MiseDialog 'Mise' $W $H
+  $script:su = @{ Page = 'welcome'; League = [bool](Test-RiotInstalled); Tiles = @(); RoutineId = ''; Name = 'My setup'; Hotkey = ''; Ran = $false; T = 0.0; Target = 0.0; Clock = [Diagnostics.Stopwatch]::StartNew(); Last = 0L; Flip = 0L }
+  if (-not $script:Animate) { $script:su.T = 1.0; $script:su.Target = 1.0 }
+  # League accounts already saved: no need to ask whether they play
+  $script:su.HadAccounts = (@(Get-RiotAccounts).Count -gt 0)
+  if ($script:su.HadAccounts) { $script:su.League = $true; $null = Set-MiseSetting 'leagueParts' $true }
+  # thin progress bar under the header: one segment per step
+  $bar = New-Object Windows.Forms.Panel; $bar.Location = New-Object Drawing.Point($M, 54); $bar.Size = New-Object Drawing.Size($cw, 4); $bar.BackColor = $script:C.Bg
+  $bar.Add_Paint({ param($s, $e)
+    $steps = @(Get-SetupSteps); $i = [Array]::IndexOf($steps, $script:su.Page); if ($script:su.Page -eq 'routine2') { $i = [Array]::IndexOf($steps, 'routine') }
+    $n = $steps.Count; $gw = ($s.Width - ($n - 1) * 4) / $n
+    for ($k = 0; $k -lt $n; $k++) { $b = New-Object Drawing.SolidBrush($(if ($k -le $i) { $script:C.Accent } else { $script:C.Line })); $e.Graphics.FillRectangle($b, [single]($k * ($gw + 4)), 0, [single]$gw, 3); $b.Dispose() }
+  })
+  $f.Controls.Add($bar)
+  $cp = New-Object Windows.Forms.Panel; $cp.Location = New-Object Drawing.Point(0, 66); $cp.Size = New-Object Drawing.Size($W, ($H - 66)); $cp.BackColor = $script:C.Bg
+  $f.Controls.Add($cp)
+  # the welcome picture: four windows, messy then in their place, again and again
+  $demoTimer = New-Object Windows.Forms.Timer; $demoTimer.Interval = 15
+  $demoTimer.Add_Tick({
+    $now = $script:su.Clock.ElapsedMilliseconds
+    if ($now - $script:su.Flip -gt 2600) { $script:su.Flip = $now; $script:su.Target = 1.0 - $script:su.Target }
+    $dt = ($now - $script:su.Last) / 550.0; $script:su.Last = $now
+    if ($script:su.T -lt $script:su.Target) { $script:su.T = [Math]::Min($script:su.Target, $script:su.T + $dt) } elseif ($script:su.T -gt $script:su.Target) { $script:su.T = [Math]::Max($script:su.Target, $script:su.T - $dt) }
+    if ($script:su.Demo) { $script:su.Demo.Invalidate() }
+  })
+  # what is open right now (step: first routine), read every 2 seconds
+  $openTimer = New-Object Windows.Forms.Timer; $openTimer.Interval = 2000
+  $openTimer.Add_Tick({ Update-SetupOpen })
+  $f.Add_FormClosed({ $demoTimer.Stop(); $openTimer.Stop(); $script:su.GoTimer.Stop(); $demoTimer.Dispose(); $openTimer.Dispose(); $null = Set-MiseSetting 'introDone' $true })
+  $goTimer = New-Object Windows.Forms.Timer; $goTimer.Interval = 10
+  $goTimer.Add_Tick({ param($s, $e) $s.Stop(); Render-SetupPage $script:su.Next })
+  $script:su.Form = $f; $script:su.Cp = $cp; $script:su.Bar = $bar; $script:su.DemoTimer = $demoTimer; $script:su.OpenTimer = $openTimer; $script:su.GoTimer = $goTimer; $script:su.W = $W; $script:su.M = $M
+  Render-SetupPage 'welcome'
   [void]$f.ShowDialog()
-  $null = Set-MiseSetting 'introDone' $true
+  return $script:su.RoutineId
+}
+function Get-SetupSteps {
+  $s = @('welcome')
+  if ((Test-RiotInstalled) -and -not $script:su.HadAccounts) { $s += 'league' }
+  if ($script:su.League) { $s += 'account' }
+  return @($s + @('routine', 'try', 'tray'))
+}
+function Move-SetupStep([int]$d) {
+  $steps = @(Get-SetupSteps); $cur = $(if ($script:su.Page -eq 'routine2') { 'routine' } else { $script:su.Page })
+  $i = [Array]::IndexOf($steps, $cur) + $d
+  if ($i -ge $steps.Count) { $script:su.Form.Close(); return }
+  Show-SetupPage $steps[[Math]::Max(0, $i)]
+}
+# the buttons at the bottom right: @(text, kind, action) from right to left
+function Add-SetupButtons($defs) {
+  $x = $script:su.W - $script:su.M; $y = $script:su.Cp.Height - 52
+  foreach ($d in $defs) {
+    $w = [Math]::Max(84, [int]([Windows.Forms.TextRenderer]::MeasureText($d[0], $script:fSmall).Width + 34))
+    $x -= $w; $b = New-Btn $d[0] $x $y $w 34 $d[1]; $b.Tag = $d[2]; $b.Add_Click({ param($s, $e) & $s.Tag })
+    $script:su.Cp.Controls.Add($b); $x -= 8
+  }
+}
+function Add-SetupText([string]$text, $font, $color, [int]$y, [int]$h) {
+  $l = New-Label $text $font $color $script:su.M $y ($script:su.W - 2 * $script:su.M) $h; $script:su.Cp.Controls.Add($l); return $l
+}
+# page changes wait for the click that asked for them to finish (its button is about to be removed)
+function Show-SetupPage([string]$page) { $script:su.Next = $page; $script:su.GoTimer.Start() }
+function Render-SetupPage([string]$page) {
+  $su = $script:su; $cp = $su.Cp; $M = $su.M; $cw = $su.W - 2 * $M
+  $su.Page = $page; $su.DemoTimer.Stop(); $su.OpenTimer.Stop(); $su.Demo = $null
+  $cp.SuspendLayout(); foreach ($c in @($cp.Controls)) { $c.Dispose() }; $cp.Controls.Clear()
+  $steps = @(Get-SetupSteps); $pos = [Array]::IndexOf($steps, $(if ($page -eq 'routine2') { 'routine' } else { $page }))
+  $y = 8
+  if ($page -ne 'welcome') { $null = Add-SetupText ("STEP {0} OF {1}" -f $pos, ($steps.Count - 1)) $script:fTiny $script:C.Muted $y 16; $y += 18 }
+  switch ($page) {
+    'welcome' {
+      $null = Add-SetupText 'Welcome to Mise' $script:fTitle $script:C.Text $y 34; $y += 38
+      $null = Add-SetupText 'Mise opens your apps and puts every window where you want it. One click, or one hotkey.' $script:fStatus $script:C.Text $y 42; $y += 50
+      $demo = New-Object Windows.Forms.Panel; $demo.Location = New-Object Drawing.Point($M, $y); $demo.Size = New-Object Drawing.Size($cw, [int]($cw * 9 / 16)); $demo.BackColor = $script:C.Panel
+      [Windows.Forms.Control].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'NonPublic,Instance').SetValue($demo, $true, $null)
+      $demo.Add_Paint({ param($s, $e) Draw-SetupDemo $e.Graphics $s.ClientRectangle })
+      $cp.Controls.Add($demo); $su.Demo = $demo; $y += $demo.Height + 12
+      $null = Add-SetupText "Let's set yours up. It takes about 3 minutes, and you can skip any step." $script:fSmall $script:C.Muted $y 36
+      Add-SetupButtons @(@('Start', 'primary', { Move-SetupStep 1 }), @('Skip setup', 'ghost', { $script:su.Form.Close() }))
+      if ($script:Animate) { $su.Clock.Restart(); $su.Last = 0; $su.Flip = 0; $su.T = 0.0; $su.Target = 0.0; $su.DemoTimer.Start() }
+    }
+    'league' {
+      $null = Add-SetupText 'Do you play League of Legends?' $script:fTitle $script:C.Text $y 34; $y += 40
+      $null = Add-SetupText "Mise can log you in and switch accounts. If you don't play, it stays out of your way." $script:fStatus $script:C.Muted $y 44; $y += 54
+      $yes = New-SetupChoice 'Yes, set up my account' 'Mise logs you in, switches accounts and starts your lobby' $M $y $cw; $y += 68
+      $no = New-SetupChoice 'No, just my windows' 'Accounts and League options stay hidden' $M $y $cw
+      foreach ($c in $yes.Parts) { $c.Add_Click({ $script:su.League = $true; $null = Set-MiseSetting 'leagueParts' $true; Show-SetupPage 'account' }) }
+      foreach ($c in $no.Parts) { $c.Add_Click({ $script:su.League = $false; $null = Set-MiseSetting 'leagueParts' $false; Show-SetupPage 'routine' }) }
+      $cp.Controls.AddRange(@($yes.Panel, $no.Panel))
+      Add-SetupButtons @(, @('Back', 'ghost', { Move-SetupStep -1 }))
+    }
+    'account' {
+      $null = Add-SetupText 'Add your League account' $script:fTitle $script:C.Text $y 34; $y += 42
+      $accs = @(Get-RiotAccounts)
+      $l1 = Add-SetupText "1   Mise opens Riot Client.`r`n2   Log in, with Stay signed in ticked.`r`n3   Give the account a short name you'll recognise." $script:fStatus $script:C.Text $y 74; $y += 82
+      $cp.Controls.Add((New-SetupNote 'Mise never sees or stores your password. It keeps the sign-in Riot Client saves, so it can switch accounts for you.' $M $y $cw 48)); $y += 60
+      if ($accs.Count) {
+        $null = Add-SetupText 'SAVED' $script:fTiny $script:C.Muted $y 16; $y += 18
+        $null = Add-SetupText ($accs -join '   ') $script:fBig $script:C.Accent $y 24; $y += 30
+        $null = Add-SetupText 'More accounts? Add them any time with + Account in the Mise window.' $script:fSmall $script:C.Muted $y 36
+        Add-SetupButtons @(@('Next', 'primary', { Move-SetupStep 1 }), @('Add another', 'tool', { $script:su.Form.TopMost = $false; Show-AccountWizard; $script:su.Form.TopMost = $true; Show-SetupPage 'account' }), @('Back', 'ghost', { Move-SetupStep -1 }))
+      } else {
+        Add-SetupButtons @(@('Add my account', 'primary', { $script:su.Form.TopMost = $false; Show-AccountWizard; $script:su.Form.TopMost = $true; Show-SetupPage 'account' }), @('Do this later', 'ghost', { Move-SetupStep 1 }), @('Back', 'ghost', { Move-SetupStep -1 }))
+      }
+    }
+    'routine' {
+      $su.Form.TopMost = $false   # out of the way while they place their windows
+      $null = Add-SetupText 'Make your first routine' $script:fTitle $script:C.Text $y 34; $y += 42
+      $cp.Controls.Add((New-SetupNote 'A routine is a set of apps and where each window goes. Run it, and Mise opens what is missing and puts everything in its place.' $M $y $cw 50)); $y += 62
+      $null = Add-SetupText 'Open the apps you use while you play and put each window where you like it. Then come back here and press Copy my screen.' $script:fStatus $script:C.Text $y 62; $y += 70
+      $null = Add-SetupText 'OPEN RIGHT NOW' $script:fTiny $script:C.Muted $y 16; $y += 18
+      $su.OpenLbl = Add-SetupText 'Looking...' $script:fSmall $script:C.Text $y 60; $y += 64
+      if ($su.League) { $null = Add-SetupText 'League is added to the routine by itself, even when the client is closed now.' $script:fSmall $script:C.Muted $y 36 }
+      Add-SetupButtons @(@('Copy my screen', 'primary', { Invoke-SetupCopy }), @('Back', 'ghost', { Move-SetupStep -1 }))
+      Update-SetupOpen; $su.OpenTimer.Start()
+    }
+    'routine2' {
+      $null = Add-SetupText 'This is your routine' $script:fTitle $script:C.Text $y 34; $y += 40
+      $null = Add-SetupText "Mise copied where every window sits. Each box is a window. Click one to leave it out." $script:fSmall $script:C.Muted $y 34; $y += 38
+      $map = New-Object Windows.Forms.Panel; $map.Location = New-Object Drawing.Point($M, $y); $map.Size = New-Object Drawing.Size($cw, 190); $map.BackColor = $script:C.Panel
+      [Windows.Forms.Control].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'NonPublic,Instance').SetValue($map, $true, $null)
+      $map.Add_Paint({ param($s, $e) Draw-SetupMap $e.Graphics $s.ClientRectangle })
+      $map.Cursor = 'Hand'
+      $map.Add_MouseClick({ param($s, $e)
+        foreach ($h in @($script:su.Hits)) { if ($h.R.Contains([single]$e.X, [single]$e.Y)) { $h.T.skip = -not [bool]$h.T.skip; $s.Invalidate(); break } } })
+      $cp.Controls.Add($map); $y += 200
+      $null = Add-SetupText 'NAME' $script:fTiny $script:C.Muted $y 16; $y += 18
+      $nb = New-MiseText $M $y $cw $su.Name; $cp.Controls.Add($nb.Panel); $su.NameBox = $nb.Box; $y += 42
+      $null = Add-SetupText 'You can fine-tune it any time in Edit routines.' $script:fSmall $script:C.Muted $y 20
+      Add-SetupButtons @(@('Save routine', 'primary', { Save-SetupRoutine }), @('Copy again', 'tool', { Show-SetupPage 'routine' }))
+    }
+    'try' {
+      $null = Add-SetupText 'Try it' $script:fTitle $script:C.Text $y 34; $y += 42
+      $null = Add-SetupText "Move one of your windows out of place, then press Run. Mise puts it back.`r`n`r`nWhile it works, a small pop-up shows each step. This first time its list opens by itself; later, point at it to see the list. Stop is always there." $script:fStatus $script:C.Text $y 132; $y += 140
+      $su.TryLbl = Add-SetupText $(if ($su.Ran) { 'Running. Watch the pop-up.' } else { '' }) $script:fSmall $script:C.Accent $y 40
+      if ($su.Ran) { Add-SetupButtons @(@('Next', 'primary', { Move-SetupStep 1 }), @('Run again', 'tool', { Start-SetupRun })) }
+      else { Add-SetupButtons @(@("Run $($su.Name)", 'primary', { Start-SetupRun }), @('Skip', 'ghost', { Move-SetupStep 1 })) }
+    }
+    'tray' {
+      $null = Add-SetupText 'Mise lives near the clock' $script:fTitle $script:C.Text $y 34; $y += 42
+      $null = Add-SetupText "Closing the Mise window doesn't quit Mise. Click its icon near the clock any time: your routines, accounts and Re-arrange are in its menu." $script:fStatus $script:C.Text $y 64; $y += 72
+      $tb = New-Object Windows.Forms.Panel; $tb.Location = New-Object Drawing.Point($M, $y); $tb.Size = New-Object Drawing.Size($cw, 52); $tb.BackColor = [Drawing.Color]::FromArgb(20, 20, 22)
+      $tb.Add_Paint({ param($s, $e)
+        $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
+        $ib = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(58, 58, 64)); $g.FillRectangle($ib, ($s.Width - 196), 17, 18, 18); $g.FillRectangle($ib, ($s.Width - 166), 17, 18, 18); $ib.Dispose()
+        $pen = New-Object Drawing.Pen($script:C.Accent, 2); $g.DrawEllipse($pen, ($s.Width - 145), 7, 38, 38); $pen.Dispose()
+        $tb2 = New-Object Drawing.SolidBrush($script:C.Muted); $g.DrawString((Get-Date -Format 'HH:mm'), $script:fSmall, $tb2, ($s.Width - 70), 9); $g.DrawString((Get-Date -Format 'dd.MM.yyyy'), $script:fTiny, $tb2, ($s.Width - 78), 27); $tb2.Dispose()
+      })
+      $lg = New-Logo ($cw - 136) 10 30; $tb.Controls.Add($lg)
+      $cp.Controls.Add($tb); $y += 64
+      if ($su.Hotkey) { $null = Add-SetupText "Your hotkey: $($su.Hotkey) runs $($su.Name) from anywhere. Change it in Edit routines." $script:fStatus $script:C.Text $y 44; $y += 50 }
+      $null = Add-SetupText 'Re-arrange puts your windows back in place without opening anything new.' $script:fStatus $script:C.Text $y 44
+      Add-SetupButtons @(@('Finish', 'primary', { $script:su.Form.Close() }), @('Back', 'ghost', { Move-SetupStep -1 }))
+    }
+  }
+  $cp.ResumeLayout(); $su.Bar.Invalidate()
+}
+# the welcome picture
+function Draw-SetupDemo($g, $r) {
+  $g.SmoothingMode = 'AntiAlias'; $g.TextRenderingHint = 'ClearTypeGridFit'
+  $bg = New-Object Drawing.Drawing2D.LinearGradientBrush($r, [Drawing.Color]::FromArgb(38, 32, 28), [Drawing.Color]::FromArgb(18, 18, 20), 60.0); $g.FillRectangle($bg, $r); $bg.Dispose()
+  $k = [double]$script:su.T; $k = $(if ($k -lt 0.5) { 4 * $k * $k * $k } else { 1 - [Math]::Pow(-2 * $k + 2, 3) / 2 })
+  $wf = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(42, 42, 48)); $bf = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(52, 52, 59)); $tf = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(207, 205, 200))
+  $pen = New-Object Drawing.Pen([Drawing.Color]::FromArgb(68, 68, 76), 1)
+  foreach ($w in $script:SetupDemo) {
+    $q = @(0, 1, 2, 3 | ForEach-Object { $w.M[$_] + ($w.P[$_] - $w.M[$_]) * $k })
+    $rc = New-Object Drawing.RectangleF([single]($r.X + $q[0] * $r.Width), [single]($r.Y + $q[1] * $r.Height), [single]($q[2] * $r.Width), [single]($q[3] * $r.Height))
+    $g.FillRectangle($wf, $rc); $g.FillRectangle($bf, $rc.X, $rc.Y, $rc.Width, [Math]::Min(14, $rc.Height)); $g.DrawRectangle($pen, $rc.X, $rc.Y, $rc.Width, $rc.Height)
+    $cb = New-Object Drawing.SolidBrush($w.C); $g.FillRectangle($cb, ($rc.X + 4), ($rc.Y + 3), 8, 8); $cb.Dispose()
+    $g.DrawString($w.N, $script:fTiny, $tf, ($rc.X + 15), ($rc.Y))
+  }
+  $tbb = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(235, 20, 20, 22)); $g.FillRectangle($tbb, $r.X, ($r.Bottom - $r.Height * 0.09), $r.Width, ($r.Height * 0.09)); $tbb.Dispose()
+  $wf.Dispose(); $bf.Dispose(); $tf.Dispose(); $pen.Dispose()
+}
+# the routine just copied: each screen as a box, each window inside it
+function Draw-SetupMap($g, $r) {
+  $g.SmoothingMode = 'AntiAlias'; $g.TextRenderingHint = 'ClearTypeGridFit'
+  $lives = @(Get-LiveMonitors (Get-MiseConfig)); if (-not $lives.Count) { return }
+  $minX = ($lives | ForEach-Object { $_.X } | Measure-Object -Minimum).Minimum; $minY = ($lives | ForEach-Object { $_.Y } | Measure-Object -Minimum).Minimum
+  $maxX = ($lives | ForEach-Object { $_.X + $_.W } | Measure-Object -Maximum).Maximum; $maxY = ($lives | ForEach-Object { $_.Y + $_.H } | Measure-Object -Maximum).Maximum
+  $pad = 14; $top = 18
+  $sc = [Math]::Min(($r.Width - 2 * $pad) / [double]($maxX - $minX), ($r.Height - $pad - $top) / [double]($maxY - $minY))
+  $ox = $r.X + ($r.Width - ($maxX - $minX) * $sc) / 2; $oy = $r.Y + $top
+  $mf = New-Object Drawing.SolidBrush($script:C.Bg); $tf = New-Object Drawing.SolidBrush($script:C.Muted); $tl = New-Object Drawing.SolidBrush($script:C.Text)
+  $tileB = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(190, 56, 56, 63)); $pen = New-Object Drawing.Pen($script:C.Line, 1); $tpen = New-Object Drawing.Pen([Drawing.Color]::FromArgb(85, 85, 94), 1)
+  $sf = New-Object Drawing.StringFormat; $sf.Alignment = 'Center'; $sf.LineAlignment = 'Center'; $sf.Trimming = 'EllipsisCharacter'
+  $offB = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(70, 40, 40, 44)); $offT = New-Object Drawing.SolidBrush($script:C.Muted); $offP = New-Object Drawing.Pen($script:C.Line, 1); $offP.DashStyle = 'Dash'
+  $hits = @()
+  foreach ($m in $lives) {
+    $a = $m.Work
+    $mr = New-Object Drawing.RectangleF([single]($ox + ($a.X - $minX) * $sc), [single]($oy + ($a.Y - $minY) * $sc), [single]($a.W * $sc), [single]($a.H * $sc))
+    $g.FillRectangle($mf, $mr); $g.DrawRectangle($pen, $mr.X, $mr.Y, $mr.Width, $mr.Height)
+    $g.DrawString("$($m.name)", $script:fTiny, $tf, $mr.X, ($mr.Y - 15))
+    foreach ($t in @($script:su.Tiles | Where-Object { $_.monitor -eq $m.id })) {
+      $tr = New-Object Drawing.RectangleF([single]($mr.X + [double]$t.rect.x * $mr.Width), [single]($mr.Y + [double]$t.rect.y * $mr.Height), [single]([double]$t.rect.w * $mr.Width), [single]([double]$t.rect.h * $mr.Height))
+      if ($t.skip) { $g.FillRectangle($offB, $tr); $g.DrawRectangle($offP, $tr.X, $tr.Y, $tr.Width, $tr.Height); $g.DrawString("$($t.name) - left out", $script:fTiny, $offT, $tr, $sf) }
+      else { $g.FillRectangle($tileB, $tr); $g.DrawRectangle($tpen, $tr.X, $tr.Y, $tr.Width, $tr.Height); $g.DrawString("$($t.name)", $script:fTiny, $tl, $tr, $sf) }
+      $hits = @(@{ R = $tr; T = $t }) + $hits   # the one drawn last (on top) is found first
+    }
+  }
+  $script:su.Hits = $hits
+  foreach ($o in @($mf, $tf, $tl, $tileB, $pen, $tpen, $sf, $offB, $offT, $offP)) { $o.Dispose() }
+}
+function Update-SetupOpen {
+  if (-not $script:su.OpenLbl -or $script:su.OpenLbl.IsDisposed) { return }
+  try { $items = @(Get-CaptureList (Get-MiseConfig) | Where-Object { $_.Kind -ne 'league' -and $_.Proc -notin @('powershell', 'pwsh', 'conhost', 'WindowsTerminal') }) } catch { $items = @() }
+  $script:su.OpenLbl.Text = $(if ($items.Count) { (@($items | ForEach-Object { $_.Name } | Select-Object -Unique) -join ',   ') } else { 'Nothing yet. Open your apps; this list updates by itself.' })
+}
+function Invoke-SetupCopy {
+  $su = $script:su
+  $items = @(Get-CaptureList (Get-MiseConfig) | Where-Object { ($su.League -or $_.Kind -ne 'league') -and $_.Proc -notin @('powershell', 'pwsh', 'conhost', 'WindowsTerminal') })
+  if (-not @($items | Where-Object { $_.Kind -ne 'league' }).Count) { $su.OpenLbl.Text = 'No open windows yet. Open at least one app on your screens, then press Copy my screen again.'; $su.OpenLbl.ForeColor = $script:C.Accent; return }
+  $tiles = @()
+  foreach ($it in $items) {
+    $t = ConvertTo-Tile $it $(if ($it.Kind -eq 'web') { 'close' } else { 'leave' }); $t | Add-Member -NotePropertyName skip -NotePropertyValue $false -Force
+    if ($t.kind -eq 'web' -and $t.url -like '*u.gg*') { $t.kind = 'ugg'; $t.name = 'u.gg (opens in champ select)' }
+    $tiles += $t
+  }
+  foreach ($mid in @($tiles | ForEach-Object { $_.monitor } | Select-Object -Unique)) { $null = Invoke-Tidy @($tiles | Where-Object { $_.monitor -eq $mid -and $_.kind -ne 'league' }) 0.03 }
+  $su.Tiles = $tiles
+  Show-SetupPage 'routine2'
+}
+function Save-SetupRoutine {
+  $su = $script:su
+  $n = "$($su.NameBox.Text)".Trim(); if (-not $n) { $n = 'My setup' }; $su.Name = $n
+  $cfg = Get-MiseConfig
+  $hk = Get-FreeHotkey $cfg ''
+  $keep = @($su.Tiles | Where-Object { -not $_.skip } | Select-Object -Property * -ExcludeProperty skip)
+  if (-not $keep.Count) { [void][Windows.Forms.MessageBox]::Show('Every window is left out. Click one on the map to keep it, or press Copy again.', 'Mise'); return }
+  $r = [pscustomobject]@{ id = (New-Id); name = $n; hotkey = $(if ($hk) { $hk } else { '' }); league = [bool]$su.League; taskbar = @(); card = $null; tiles = @($keep) }
+  $cfg.routines = @(@($cfg.routines) + $r)
+  Save-MiseConfig $cfg
+  $su.RoutineId = $r.id; $su.Hotkey = $r.hotkey
+  Write-Log "setup: saved routine '$n' with $($keep.Count) tiles"
+  Move-SetupStep 1
+}
+# a real run of the routine just saved; the tray shows the pop-up
+function Start-SetupRun {
+  $su = $script:su; if (-not $su.RoutineId) { Move-SetupStep 1; return }
+  $status = Join-Path $env:TEMP 'mise-status.txt'
+  Set-Content -LiteralPath $status -Value "Starting '$($su.Name)'" -Encoding UTF8
+  Set-Content -LiteralPath (Join-Path $script:DataDir '_last-routine.txt') -Value $su.RoutineId
+  $a = "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $script:MiseDir 'mise-run.ps1')`" -Routine `"$($su.RoutineId)`""
+  $acc = @(Get-RiotAccounts) | Select-Object -First 1
+  if ($su.League -and $acc) { $a += " -Account `"$acc`"" }
+  $a += " -StatusFile `"$status`""
+  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $a
+  $su.Ran = $true; $su.Form.TopMost = $false
+  Show-SetupPage 'try'
+}
+
+# ---------- one-time tips: a small note next to the thing it is about, shown once ----------
+function Show-MiseHint($owner, [Drawing.Rectangle]$anchor, [string]$key, [string]$text, [bool]$modal = $false) {
+  if (Test-HintSeen $key) { return }
+  Set-HintSeen $key
+  $W = 280
+  $h = New-Object Windows.Forms.Form; $h.FormBorderStyle = 'None'; $h.ShowInTaskbar = $false; $h.StartPosition = 'Manual'; $h.TopMost = $true; $h.BackColor = $script:C.Panel
+  $lb = New-Label $text $script:fSmall $script:C.Text 12 10 ($W - 24) 10; $lb.BackColor = $script:C.Panel
+  $lb.Height = [int]([Windows.Forms.TextRenderer]::MeasureText($text, $script:fSmall, (New-Object Drawing.Size(($W - 24), 400)), 'WordBreak').Height + 4)
+  $ok = New-Btn 'Got it' ($W - 92) ($lb.Bottom + 6) 80 28 'ghost'; $ok.Add_Click({ param($s, $e) $s.FindForm().Close() })
+  $h.Controls.AddRange(@($lb, $ok))
+  $h.ClientSize = New-Object Drawing.Size($W, ($ok.Bottom + 8))
+  $h.Add_Paint({ param($s, $e) $pen = New-Object Drawing.Pen($script:C.Accent, 1); $e.Graphics.DrawRectangle($pen, 0, 0, $s.Width - 1, $s.Height - 1); $pen.Dispose() })
+  # below the thing, else above it; always inside its screen
+  $wa = [Windows.Forms.Screen]::FromRectangle($anchor).WorkingArea
+  $x = [Math]::Max($wa.Left + 8, [Math]::Min($anchor.Left, $wa.Right - $h.Width - 8))
+  $y = $anchor.Bottom + 8; if ($y + $h.Height -gt $wa.Bottom - 8) { $y = $anchor.Top - $h.Height - 8 }
+  $h.Location = New-Object Drawing.Point($x, [Math]::Max($wa.Top + 8, $y))
+  $t = New-Object Windows.Forms.Timer; $t.Interval = 15000; $t.Tag = $h; $t.Add_Tick({ param($s, $e) $s.Stop(); try { $s.Tag.Close() } catch {} }); $h.Tag = $t
+  $h.Add_Shown({ param($s, $e) $s.Tag.Start() })
+  $h.Add_FormClosed({ param($s, $e) try { $s.Tag.Stop(); $s.Tag.Dispose() } catch {} })
+  if ($modal) { [void]$h.ShowDialog() } else { if ($owner) { $h.Owner = $owner }; $h.Show(); if ($owner) { $owner.Activate() } }
+}
+
+# ---------- a guided tour: the window dims, one part at a time stays bright, a note explains it ----------
+# $stops: @{ T = title; B = text; Rect = { a scriptblock returning the part's screen rectangle, or $null to skip } }
+function Show-MiseTour($form, $stops) {
+  $stops = @($stops | Where-Object { $null -ne (& $_.Rect) })
+  if (-not $stops.Count) { return }
+  $ov = New-Object Windows.Forms.Form; $ov.FormBorderStyle = 'None'; $ov.ShowInTaskbar = $false; $ov.StartPosition = 'Manual'; $ov.BackColor = [Drawing.Color]::Black; $ov.Opacity = 0.6
+  $ov.Bounds = $form.Bounds; $ov.Owner = $form
+  $script:tour = @{ I = 0; Hole = [Drawing.Rectangle]::Empty }
+  $ov.Add_Paint({ param($s, $e) if (-not $script:tour.Hole.IsEmpty) { $pen = New-Object Drawing.Pen($script:C.Accent, 3); $r = $script:tour.Hole; $r.Inflate(2, 2); $e.Graphics.DrawRectangle($pen, $r); $pen.Dispose() } })
+  $W = 340; $M = 18
+  $b = New-MiseDialog 'Edit routines' $W 220
+  $cnt = New-Label '' $script:fTiny $script:C.Muted $M 54 200 16
+  $hd = New-Label '' $script:fBig $script:C.Text $M 72 ($W - 2 * $M) 24
+  $tx = New-Label '' $script:fSmall $script:C.Text $M 98 ($W - 2 * $M) 72
+  $bN = New-Btn 'Next' ($W - $M - 90) 176 90 32 'primary'; $bB = New-Btn 'Back' ($W - $M - 188) 176 90 32; $bS = New-Btn 'Skip tour' $M 176 100 32 'ghost'
+  $b.Controls.AddRange(@($cnt, $hd, $tx, $bN, $bB, $bS)); $b.ClientSize = New-Object Drawing.Size($W, 220)
+  $apply = {
+    $i = $script:tour.I; $st = $stops[$i]
+    $r = & $st.Rect; $hole = New-Object Drawing.Rectangle(($r.X - $ov.Left - 6), ($r.Y - $ov.Top - 6), ($r.Width + 12), ($r.Height + 12))
+    $script:tour.Hole = $hole
+    $rg = New-Object Drawing.Region((New-Object Drawing.Rectangle(0, 0, $ov.Width, $ov.Height))); $rg.Exclude($hole)
+    $ov.Region = $rg; $ov.Invalidate()
+    $cnt.Text = "$($i + 1) OF $($stops.Count)"; $hd.Text = $st.T; $tx.Text = $st.B
+    $bB.Visible = ($i -gt 0); $bN.Text = $(if ($i -eq $stops.Count - 1) { 'Got it' } else { 'Next' }); $bN.Invalidate()
+    # the note sits below the bright part, else above it, else beside it
+    $wa = [Windows.Forms.Screen]::FromRectangle($r).WorkingArea
+    $x = [Math]::Max($wa.Left + 8, [Math]::Min($r.Left, $wa.Right - $b.Width - 8)); $y = $r.Bottom + 16
+    if ($y + $b.Height -gt $wa.Bottom - 8) { $y = $r.Top - $b.Height - 16 }
+    if ($y -lt $wa.Top + 8) { $y = [Math]::Max($wa.Top + 8, $r.Top); $x = $(if ($r.Right + 16 + $b.Width -lt $wa.Right) { $r.Right + 16 } else { [Math]::Max($wa.Left + 8, $r.Left - $b.Width - 16) }) }
+    $b.Location = New-Object Drawing.Point($x, $y)
+  }
+  $bN.Add_Click({ if ($script:tour.I -ge $stops.Count - 1) { $b.Close() } else { $script:tour.I++; & $apply } })
+  $bB.Add_Click({ if ($script:tour.I -gt 0) { $script:tour.I--; & $apply } })
+  $bS.Add_Click({ $b.Close() })
+  $b.StartPosition = 'Manual'
+  $ov.Show()
+  & $apply
+  [void]$b.ShowDialog($ov)
+  $ov.Close(); $ov.Dispose()
+  $form.Activate()
 }
 
 # ---------- about: where the name and the icon come from ----------
+# About > Replay setup: the setup again, and the tour and tips come back
+function Invoke-ReplaySetup {
+  foreach ($kv in @(@('tourDone', $false), @('hintsSeen', ''), @('popExplained', $false))) { $null = Set-MiseSetting $kv[0] $kv[1] }
+  $null = Show-Setup
+  $script:replayed = $true
+}
 function Show-MiseAbout {
   $W = 400; $M = 18
   $f = New-MiseDialog 'About Mise' $W 330
@@ -615,8 +947,9 @@ function Show-MiseAbout {
   $f.Controls.Add((New-Label "Mise $($script:MiseVersion)" $script:fBig $script:C.Text 60 60 280 24))
   $txt = "The name comes from 'mise en place' - French for 'everything in its place'. Before service, cooks set out every ingredient and tool where their hands expect it, so cooking is calm and fast.`r`n`r`nThe icon is that station: three prep bowls in a row on the counter.`r`n`r`nMise does the same for your screens before you play."
   $f.Controls.Add((New-Label $txt $script:fSmall $script:C.Muted $M 100 ($W - 2 * $M) 150))
-  $bIntro = New-Btn 'Show the intro again' $M 262 ($W - 2 * $M) 32
-  $bIntro.Add_Click({ $f.Close(); Show-Intro })
+  $bIntro = New-Btn 'Replay setup' $M 262 ($W - 2 * $M) 32
+  $tipA = New-Object Windows.Forms.ToolTip; $tipA.SetToolTip($bIntro, 'Runs the first-time setup again, and brings back the Edit routines tour and the one-time tips.')
+  $bIntro.Add_Click({ $f.Close(); Invoke-ReplaySetup })
   $f.Controls.Add($bIntro)
   $f.ClientSize = New-Object Drawing.Size($W, 312)
   [void]$f.ShowDialog()

@@ -1,6 +1,6 @@
 ﻿# Mise (shared edition) - core library. Dot-sourced by the runner, the tray and the builder.
 # Everything the routines can do lives here, driven by a JSON config:  %APPDATA%\Mise\config.json
-$script:MiseVersion = '0.7.0'
+$script:MiseVersion = '0.7.1'
 # feedback goes to a Google Form (no account needed); filled in when the form exists ('' = keep entries in a local queue)
 $script:FeedbackForm = ''
 $script:FeedbackFields = @{ type = ''; message = ''; name = ''; info = '' }
@@ -14,6 +14,7 @@ New-Item -ItemType Directory -Force -Path $script:DataDir | Out-Null
 # ======================= config =======================
 $script:DefaultSettings = [ordered]@{
   autoAccept = $false; champPage = $true         # League helpers (tray): u.gg page of your champion is on by default
+  acceptDelay = 9                                 # auto-accept: seconds after the ready-check pops (it lasts 12 s; 0 = right away)
   queue = 2400                                    # one global lobby after login (queue id, 0 = none)
   accent = '#D8895A'                              # copper; users can pick another accent
   theme = 'ember'                                 # look: ember | midnight | aurora | emberglass | deepsea | nebula
@@ -25,6 +26,10 @@ $script:DefaultSettings = [ordered]@{
   updateRepo = 'codefecta/Mise'                                 # GitHub owner/repo for the update check ('' = off)
   lastUpdateCheck = ''
   introDone = $false                              # the short intro was shown once
+  leagueParts = $true                             # accounts, lobby and League options (off: Mise is only for windows)
+  tourDone = $false                               # the Edit routines tour was shown once
+  hintsSeen = ''                                  # one-time tips already shown (comma list)
+  popExplained = $false                           # the first run's pop-up opened by itself once
   autoExit = $true                                # a League routine exits by itself when the League client closes
   accountPrefs = $null                            # per account: its own lobby (queue) and a routine that starts with it
   lastSeenVersion = ''                            # the version whose What's new was shown
@@ -76,17 +81,12 @@ function Get-MiseConfig {
 # which routine is running now (set when a routine starts or is arranged, cleared when it exits)
 # shown once after an update (in the Mise window); keep it to what a user will notice
 $script:WhatsNew = @(
-  'Six looks in Settings: Ember and five glass ones (Midnight Glass, Aurora, Ember Glass, Deep Sea, Nebula).'
-  'A tidier tray menu: what is running sits on top with its Exit button, and Re-arrange is one click away.'
-  'The progress pop-up is a small pill; point at it for the step list. It opens by itself for a problem or a League update.'
-  'When League is updating, Mise waits and says so instead of pressing Play.'
-  'New motion: the window rises in, rows react to the mouse, the account frame glides when you switch.'
-  'Starting a routine while another is on switches to it: the old one exits first.'
-  'A routine can start by itself when its game opens (Edit routines > Start with a program).'
-  'Each League account can have its own lobby and routine (the ... menu on the account).'
-  "A friend's Discord stream opens on its own tile; it can open with the sound off."
-  'A problem in the progress pop-up has a Fix button with the one action that fixes it.'
-  'Screens name themselves; right-click a tile in Edit routines for Quick size.'
+  'A new first-time setup: add your League account, copy your screen into your first routine and try it, step by step.'
+  'Edit routines shows you around the first time it opens, and small tips show once when you first need them.'
+  'About > Replay setup runs the setup and the tips again.'
+  'Settings > League parts: hide accounts and League options if you only use Mise for your windows.'
+  'Auto-accept has a timer: turning it on slides out a slider, from right away to 10 seconds after the match pops.'
+  'Edit routines reads the Spotify mini player''s real smallest and largest size more reliably.'
 )
 # per-account choices: its own lobby (queue id) and a routine that starts with it. Nothing set = the general lobby, no routine.
 function Get-AccountPref($cfg, [string]$name) {
@@ -462,3 +462,8 @@ function Get-LeagueDir {
   return "$env:SystemDrive\Riot Games\League of Legends"
 }
 function Test-RiotInstalled { if ($null -eq $script:riotOn) { $script:riotOn = Test-Path -LiteralPath (Get-RiotClientExe) }; return $script:riotOn }
+# League parts show when League is on this PC and the person did not say "just my windows"
+function Test-LeagueOn { if (-not (Test-RiotInstalled)) { return $false }; return [bool](Get-MiseSetting (Get-MiseConfig) 'leagueParts') }
+# one-time tips: each key shows once
+function Test-HintSeen([string]$k) { return (@("$(Get-MiseSetting (Get-MiseConfig) 'hintsSeen')" -split ',') -contains $k) }
+function Set-HintSeen([string]$k) { $cur = @("$(Get-MiseSetting (Get-MiseConfig) 'hintsSeen')" -split ',' | Where-Object { $_ }); if ($cur -notcontains $k) { $null = Set-MiseSetting 'hintsSeen' ((@($cur) + $k) -join ',') } }

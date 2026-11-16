@@ -370,7 +370,11 @@ $toastTimer.Add_Tick({
     $age = ((Get-Date) - $fi.LastWriteTime).TotalSeconds
     if ($age -gt 120 -and -not $toast.Visible) { return }
     # a new run: the clock and the step times start again
-    if ($head -ne $script:lastHead -or $lines.Count -lt $script:lastLines -or -not $script:runStart) { $script:runStart = Get-Date; $script:stepSeen = @{}; $pop.Pinned = $false; $script:toastUntil = [datetime]::MinValue }
+    if ($head -ne $script:lastHead -or $lines.Count -lt $script:lastLines -or -not $script:runStart) { $script:runStart = Get-Date; $script:stepSeen = @{}; $pop.Pinned = $false; $script:toastUntil = [datetime]::MinValue
+      # the very first routine run: the step list opens by itself once, so people see what the pill holds
+      $script:explainRun = $false
+      if ($head -match '^Starting' -and -not [bool](Get-MiseSetting (Get-MiseConfig) 'popExplained')) { $pop.Pinned = $true; $script:explainRun = $true; $null = Set-MiseSetting 'popExplained' $true }
+    }
     $script:lastHead = $head; $script:lastLines = $lines.Count
     $fr = Get-Friendly $lines
     $its = @(); foreach ($k in @($fr.Items.Keys)) { $its += @{ Name = "$k"; State = "$($fr.Items[$k])"; Why = "$($fr.Why[$k])" } }
@@ -397,6 +401,7 @@ $toastTimer.Add_Tick({
       $toast.Location = Get-ToastSpot $head; $pop.AnchorBottom = $script:toastBottom
       $toast.Opacity = 0.01; [MiseT.Native]::ShowWindow($toast.Handle, 4) | Out-Null; $toast.Visible = $true; Start-Fade 0.97; $pop.Kick()
     } elseif ($fadeTimer.Enabled -and $script:fadeTo -le 0 -and -not $fr.Done) { Start-Fade 0.97 }
+    if ($fr.Done -and $script:explainRun) { $script:explainRun = $false; $pop.Pinned = $false; $pop.Invalidate() }
     if ($fr.Done) { if ($script:toastUntil -eq [datetime]::MinValue -and -not $fixMenu.Visible) { $script:toastUntil = (Get-Date).AddSeconds($(if ($problem) { 20 } else { 3 })) } } else { $script:toastUntil = [datetime]::MinValue }
     if ($age -gt 900) { Hide-Toast }
   } catch {}
@@ -405,7 +410,7 @@ $toastTimer.Start()
 
 # ---------- optional League helpers (off by default; switched on in the tray menu) ----------
 $leagueDir = Get-LeagueDir
-$acceptAt  = 9      # seconds into the 12 s ready-check at which Accept is pressed
+$acceptAt  = 9      # default seconds into the 12 s ready-check at which Accept is pressed (Settings: acceptDelay)
 $uggUrls = @{ Mayhem = 'https://u.gg/lol/champions/aram-mayhem/{slug}-aram-mayhem'; Aram = 'https://u.gg/lol/champions/aram/{slug}-aram'; Rift = 'https://u.gg/lol/champions/{slug}/build/{role}' }
 $slugFix = @{ 'nunuwillump' = 'nunu'; 'renataglasc' = 'renata' }
 $script:accepted = $false; $script:lastChamp = 0; $script:aramChamp = 0; $script:aramSince = $null; $script:champCache = @{}
@@ -501,9 +506,12 @@ function Watch-League {
   $g = Invoke-Lcu $lcu '/lol-gameflow/v1/gameflow-phase'; if ($g.Code -ne '200') { return }
   switch ($g.Body.Trim('"')) {
     'ReadyCheck' {
+      # while the ready-check is up, look twice a second so the chosen moment is hit closely
+      if ($lcuTimer.Interval -ne 400) { $lcuTimer.Interval = 400 }
       if ($acc -and -not $script:accepted) {
         $rc = Get-LcuJson $lcu '/lol-matchmaking/v1/ready-check'
-        if ($rc -and $rc.state -eq 'InProgress' -and $rc.playerResponse -eq 'None' -and [double]$rc.timer -ge $acceptAt) { Invoke-Lcu $lcu '/lol-matchmaking/v1/ready-check/accept' 'POST' | Out-Null; $script:accepted = $true }
+        $at = $acceptAt; try { $at = [Math]::Max(0, [Math]::Min(10, [int](Get-MiseSetting $script:cfg 'acceptDelay'))) } catch {}
+        if ($rc -and $rc.state -eq 'InProgress' -and $rc.playerResponse -eq 'None' -and [double]$rc.timer -ge $at) { Invoke-Lcu $lcu '/lol-matchmaking/v1/ready-check/accept' 'POST' | Out-Null; $script:accepted = $true }
       }
     }
     'ChampSelect' {
@@ -530,7 +538,7 @@ function Watch-League {
       # safety net: the countdown was missed - open the final champion once the game loads
       if ($ugg -and $script:aramChamp -gt 0 -and $script:aramChamp -ne $script:lastChamp) { $script:lastChamp = $script:aramChamp; Open-Ugg $lcu $script:aramChamp $null }
     }
-    default { $script:accepted = $false; $script:lastChamp = 0; $script:aramChamp = 0 }
+    default { $script:accepted = $false; $script:lastChamp = 0; $script:aramChamp = 0; if ($lcuTimer.Interval -ne 2000) { $lcuTimer.Interval = 2000 } }
   }
 }
 $lcuTimer = New-Object Windows.Forms.Timer; $lcuTimer.Interval = 2000

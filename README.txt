@@ -1,9 +1,12 @@
-﻿Mise (shared edition) 0.7.0 - everything in its place before you play
+﻿Mise (shared edition) 0.7.1 - everything in its place before you play
 (mise = short for 'mise en place', a chef's habit: everything in its place before service starts.)
 
 INSTALL
 1. Double-click INSTALL.cmd. Mise starts in the tray (near the clock) and adds a desktop icon.
-2. First run: each screen lights up with a copper frame - give it a name. A short intro follows.
+2. First run: Mise names your screens, then a short setup walks you through it: League or not, your League
+   account, your first routine (Copy my screen), a try-out run, and where Mise lives (the tray icon, the hotkey).
+   Every step can be skipped. About > Replay setup runs it again. Edit routines shows a short tour the first
+   time it opens, and small tips show once when you first need them.
 3. Updating from 0.5: your screens, settings and League accounts stay. Old routines are not carried over
    (routines are built differently now); a copy of the old settings file is kept as config-v3.json.
 
@@ -52,7 +55,8 @@ THE MISE WINDOW (desktop icon, or tray > Open Mise)
   that starts with it.
   Starting a routine while another is on switches: the old one exits first.
 - Tools: Re-arrange '<routine>' (put the windows back), Edit routines (the builder), + Account.
-- League options (when League is installed): auto-accept, lobby after login (pick from the list), u.gg page for your champion.
+- League options (when League is installed): auto-accept (turning it on slides out a slider: right away or up to
+  10 s after the match pops), lobby after login (pick from the list), u.gg page for your champion.
 - Exit '<routine>' shows while a routine runs.
 - The gear: Look (Ember or five glass looks: Midnight Glass, Aurora, Ember Glass, Deep Sea, Nebula; the logo stays copper), accent colour, pop-up corner, window spot, check for updates, Rename screens (screens are named automatically), Fix League client, Restart Mise,
   Start over (first-time setup again, League accounts stay), Uninstall Mise, About.

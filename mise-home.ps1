@@ -185,7 +185,7 @@ function Build-Lists {
 
   $accPanel.Controls.Clear(); $script:accButtons = @(); $y = 0
   $names = @(Get-RiotAccounts)
-  $lr = ($names.Count -gt 0) -or (Test-RiotInstalled)   # the accounts section shows when League is on this PC
+  $lr = (Test-LeagueOn) -or ($names.Count -gt 0 -and [bool](Get-MiseSetting $script:cfg 'leagueParts'))   # the accounts section: League on this PC, unless set to just windows
   $active = ''; $af = Join-Path $store '_active.txt'; if (Test-Path $af) { $active = (Get-Content -LiteralPath $af -Raw).Trim() }
   $hours = Get-WeekHours
   if ($lr -and $names.Count) {
@@ -236,18 +236,55 @@ function Show-Tools {
 
 # ---------- options ----------
 $btnAcc   = New-Btn 'Auto-accept match' 0 0 100 38 'setting'; $btnAcc.IsSwitch = $true
+# auto-accept's timer: a drawer that slides out from under the Auto-accept row while it is on, with a slider (0 = right away .. 10 s)
+$accSub = New-Object Windows.Forms.Panel; $accSub.BackColor = [Drawing.Color]::Transparent; $accSub.Cursor = 'Hand'; $accSub.Visible = $false
+[Windows.Forms.Control].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'NonPublic,Instance').SetValue($accSub, $true, $null)
+$script:accFull = 64; $script:accDrag = $false
 $btnQueue = New-Btn 'Lobby after login' 0 0 100 38 'setting'
 $btnUggA  = New-Btn 'Open u.gg for my champion' 0 0 100 38 'setting'; $btnUggA.IsSwitch = $true
 $btnAutoX = New-Btn 'Exit routine when League closes' 0 0 100 38 'setting'; $btnAutoX.IsSwitch = $true
 $opts = @($btnAcc, $btnQueue, $btnUggA, $btnAutoX)
-$form.Controls.AddRange($opts)
+$form.Controls.AddRange($opts); $form.Controls.Add($accSub); $accSub.SendToBack()
 function Show-Opts {
   $btnAcc.On = [bool](Get-MiseSetting $script:cfg 'autoAccept'); $btnUggA.On = [bool](Get-MiseSetting $script:cfg 'champPage'); $btnAutoX.On = [bool](Get-MiseSetting $script:cfg 'autoExit')
   $q = [int](Get-MiseSetting $script:cfg 'queue'); $qn = ($script:QueueList | Where-Object { $_.Id -eq $q } | Select-Object -First 1).Name
   $btnQueue.Chip = $(if ($qn) { $qn } else { "Queue $q" })
+  $accSub.Invalidate()
   foreach ($b in $opts) { $b.Invalidate() }
 }
-$btnAcc.Add_Click({ $script:cfg = Set-MiseSetting 'autoAccept' (-not [bool](Get-MiseSetting $script:cfg 'autoAccept')); Show-Opts })
+$btnAcc.Add_Click({ $script:cfg = Set-MiseSetting 'autoAccept' (-not [bool](Get-MiseSetting $script:cfg 'autoAccept')); Show-Opts; Start-Anim 'a' $(if ($btnAcc.On) { 1.0 } else { 0.0 }) 240 })
+function New-RoundPath($r, [double]$rad) {
+  $p = New-Object Drawing.Drawing2D.GraphicsPath; $d = [single]([Math]::Max(0.5, $rad * 2))
+  $p.AddArc($r.X, $r.Y, $d, $d, 180, 90); $p.AddArc(($r.Right - $d), $r.Y, $d, $d, 270, 90)
+  $p.AddArc(($r.Right - $d), ($r.Bottom - $d), $d, $d, 0, 90); $p.AddArc($r.X, ($r.Bottom - $d), $d, $d, 90, 90); $p.CloseFigure()
+  return $p
+}
+# the drawer: 'Accept after' and the value, a track with eleven stops; drag or click on it to set the moment
+function Get-AccValue { $v = 9; try { $v = [int](Get-MiseSetting $script:cfg 'acceptDelay') } catch {}; return [Math]::Max(0, [Math]::Min(10, $v)) }
+function Get-AccTrack { return @{ X0 = 16.0; X1 = [double]($accSub.Width - 16) } }
+$accSub.Add_Paint({ param($s, $e)
+  $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'; $g.TextRenderingHint = 'ClearTypeGridFit'
+  $off = $s.Height - $script:accFull          # drawn from the bottom up, so it slides out from under the row
+  $r = New-Object Drawing.RectangleF(0.5, [single]($off + 0.5), [single]($s.Width - 1), [single]($script:accFull - 1))
+  $path = New-RoundPath $r 8
+  $fb = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(200, $script:C.Panel)); $g.FillPath($fb, $path); $fb.Dispose()
+  $pen = New-Object Drawing.Pen($script:C.Line, 1); $g.DrawPath($pen, $path); $pen.Dispose(); $path.Dispose()
+  $v = $(if ($script:accDrag) { $script:accLive } else { Get-AccValue })
+  $tm = New-Object Drawing.SolidBrush($script:C.Muted); $g.DrawString('Accept after', $script:fSmall, $tm, 14, ($off + 17)); $tm.Dispose()
+  $txt = $(if ($v -eq 0) { 'Right away' } else { "$v s" })
+  $ta = New-Object Drawing.SolidBrush($script:C.Accent); $tw = $g.MeasureString($txt, $script:fBig).Width; $g.DrawString($txt, $script:fBig, $ta, ($s.Width - 14 - $tw), ($off + 14)); $ta.Dispose()
+  $tk = Get-AccTrack; $ty = $off + 47
+  $lp = New-Object Drawing.Pen($script:C.Line, 3); $lp.StartCap = 'Round'; $lp.EndCap = 'Round'; $g.DrawLine($lp, [single]$tk.X0, [single]$ty, [single]$tk.X1, [single]$ty); $lp.Dispose()
+  $kx = $tk.X0 + ($tk.X1 - $tk.X0) * $v / 10.0
+  $ap = New-Object Drawing.Pen($script:C.Accent, 3); $ap.StartCap = 'Round'; $ap.EndCap = 'Round'; if ($v -gt 0) { $g.DrawLine($ap, [single]$tk.X0, [single]$ty, [single]$kx, [single]$ty) }; $ap.Dispose()
+  $db = New-Object Drawing.SolidBrush($script:C.Muted); for ($i = 0; $i -le 10; $i++) { $dx = $tk.X0 + ($tk.X1 - $tk.X0) * $i / 10.0; if ($i -ne $v) { $g.FillEllipse($db, [single]($dx - 1.5), [single]($ty + 5), 3, 3) } }; $db.Dispose()
+  $kb = New-Object Drawing.SolidBrush($script:C.Accent); $g.FillEllipse($kb, [single]($kx - 7), [single]($ty - 7), 14, 14); $kb.Dispose()
+  $kc = New-Object Drawing.SolidBrush($script:C.Bg); $g.FillEllipse($kc, [single]($kx - 3), [single]($ty - 3), 6, 6); $kc.Dispose()
+})
+function Set-AccFromX([int]$x) { $tk = Get-AccTrack; $script:accLive = [int][Math]::Round([Math]::Max(0, [Math]::Min(10, ($x - $tk.X0) / ($tk.X1 - $tk.X0) * 10))); $accSub.Invalidate() }
+$accSub.Add_MouseDown({ param($s, $e) if ($e.Button -eq 'Left') { $script:accDrag = $true; Set-AccFromX $e.X } })
+$accSub.Add_MouseMove({ param($s, $e) if ($script:accDrag) { Set-AccFromX $e.X } })
+$accSub.Add_MouseUp({ param($s, $e) if ($script:accDrag) { $script:accDrag = $false; $script:cfg = Set-MiseSetting 'acceptDelay' ([int]$script:accLive); $accSub.Invalidate() } })
 $btnAutoX.Add_Click({ $script:cfg = Set-MiseSetting 'autoExit' (-not [bool](Get-MiseSetting $script:cfg 'autoExit')); Show-Opts })
 $btnUggA.Add_Click({ $script:cfg = Set-MiseSetting 'champPage' (-not [bool](Get-MiseSetting $script:cfg 'champPage')); Show-Opts })
 # gear: settings (look, quiet mode, pop-up, window spot, updates, troubleshooting, about)
@@ -263,12 +300,13 @@ $btnGear.Add_Click({
     'startover' { $form.TopMost = $false; if (Invoke-StartOver) { $form.Close() } else { Set-HomeTop }; return }
     'reset' { Reset-Mise; return }
     'uninstall' { $form.TopMost = $false; if (Invoke-MiseUninstall) { $form.Close() } else { Set-HomeTop }; return }
-    'about' { $form.TopMost = $false; Show-MiseAbout; Set-HomeTop }
+    'about' { $form.TopMost = $false; $script:replayed = $false; Show-MiseAbout; if ($script:replayed) { Restart-Home; return }; Set-HomeTop }
     'feedback' { $form.TopMost = $false; Show-MiseFeedback; Set-HomeTop }
   }
-  if ("$(Get-MiseSetting $before 'accent')" -ne "$(Get-MiseSetting $script:cfg 'accent')" -or "$(Get-MiseSetting $before 'theme')" -ne "$(Get-MiseSetting $script:cfg 'theme')" -or [bool](Get-MiseSetting $before 'animations') -ne [bool](Get-MiseSetting $script:cfg 'animations')) { Update-MiseLook $script:cfg; Restart-Home }
+  if ("$(Get-MiseSetting $before 'accent')" -ne "$(Get-MiseSetting $script:cfg 'accent')" -or "$(Get-MiseSetting $before 'theme')" -ne "$(Get-MiseSetting $script:cfg 'theme')" -or [bool](Get-MiseSetting $before 'animations') -ne [bool](Get-MiseSetting $script:cfg 'animations') -or [bool](Get-MiseSetting $before 'leagueParts') -ne [bool](Get-MiseSetting $script:cfg 'leagueParts')) { Update-MiseLook $script:cfg; Restart-Home }
 })
-$tip.SetToolTip($btnAcc, 'Accept the ready-check just before its timer ends')
+$tip.SetToolTip($btnAcc, 'Accept the ready-check by itself, at the moment set on the slider below it')
+$tip.SetToolTip($accSub, 'How long after the match pops Mise presses Accept. The ready-check lasts 12 seconds.')
 $tip.SetToolTip($btnQueue, 'Click to pick a lobby')
 $tip.SetToolTip($btnAutoX, 'When the League client has been closed for about a minute, the running routine exits by itself')
 
@@ -319,7 +357,7 @@ function Set-FormHeight($h) {
   if ($form.Visible) { try { $wa = [Windows.Forms.Screen]::FromControl($form).WorkingArea; if ($form.Bottom -gt $wa.Bottom - 4) { $form.Top = [Math]::Max($wa.Top + 4, $wa.Bottom - 4 - $form.Height) } } catch {} }
 }
 # a value eased over a few frames (dropdowns sliding open and shut); the layout is redone each frame
-$script:av = @{ q = 0.0; o = $(if ($script:optsOpen) { 1.0 } else { 0.0 }) }; $script:anims = @{}
+$script:av = @{ q = 0.0; o = $(if ($script:optsOpen) { 1.0 } else { 0.0 }); a = $(if ([bool](Get-MiseSetting $script:cfg 'autoAccept')) { 1.0 } else { 0.0 }) }; $script:anims = @{}
 $animTimer = New-Object Windows.Forms.Timer; $animTimer.Interval = 15
 $animTimer.Add_Tick({
   $done = @()
@@ -360,6 +398,13 @@ function Do-Layout {
     $y0 = $y; $qk = [double]$script:av.q
     foreach ($b in $opts) {
       $b.Size = New-Object Drawing.Size($cw, 38); $b.Location = New-Object Drawing.Point($M, $y); $y += 38 + 6
+      if ([object]::ReferenceEquals($b, $btnAcc)) {
+        # the timer drawer tucks under the row's bottom edge and slides out
+        $ak = [double]$script:av.a; $ah = [int][Math]::Round(($script:accFull - 8) * $ak)
+        $accShow = ($ah -gt 1) -and $optOn -and ($script:optsOpen -or $optAnim)   # (a control reads as hidden until the window shows, so not .Visible)
+        $accSub.Visible = $accShow
+        if ($accShow) { $accSub.Bounds = New-Object Drawing.Rectangle(($M + 6), ($y - 6 - 8), ($cw - 12), ($ah + 8)); $accSub.SendToBack(); $y += $ah + [int](2 * $ak) }
+      }
       if ($qk -gt 0.001 -and [object]::ReferenceEquals($b, $btnQueue)) {
         $qh = [int][Math]::Round($script:qVis * $qk); $qList.Bounds = New-Object Drawing.Rectangle($M, ($y - 2), $cw, [Math]::Max(1, $qh)); $y += $qh + [int](4 * $qk)
       }
@@ -507,7 +552,7 @@ $form.Add_Shown({
   try { Write-Log ("home shown after {0} ms" -f [int]((Get-Date) - (Get-Process -Id $PID).StartTime).TotalMilliseconds) } catch {}
   $form.Activate(); Start-OpenAnimation $form
   Set-HomeTop   # on top only to come to the front when opened
-  # after an update: what is new, once (a first install gets the intro instead)
+  # after an update: what is new, once (a first install gets the setup instead)
   if ("$(Get-MiseSetting $script:cfg 'lastSeenVersion')" -ne $script:MiseVersion) {
     $wasIntro = [bool](Get-MiseSetting $script:cfg 'introDone')
     $script:cfg = Set-MiseSetting 'lastSeenVersion' $script:MiseVersion
@@ -519,9 +564,16 @@ $form.Add_Shown({
   }
   if (-not [bool](Get-MiseSetting $script:cfg 'introDone')) {
     $it = New-Object Windows.Forms.Timer; $it.Interval = 500
-    $it.Add_Tick({ param($s, $e) $s.Stop(); $form.TopMost = $false; Show-Intro; Set-HomeTop; $script:cfg = Get-MiseConfig })
+    $it.Add_Tick({ param($s, $e) $s.Stop(); $form.TopMost = $false; $null = Show-Setup; Restart-Home })
     $it.Start()
   }
 })
 [void]$form.ShowDialog()
 if (-not $script:restarting) { try { $mutex.ReleaseMutex() } catch {} }
+# the first time the window is closed by hand: a tip by the clock that Mise is still running there
+if (-not $script:restarting -and -not $script:proc -and [bool](Get-MiseSetting (Get-MiseConfig) 'introDone') -and -not (Test-HintSeen 'tray')) {
+  try {
+    $wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    Show-MiseHint $null (New-Object Drawing.Rectangle(($wa.Right - 300), ($wa.Bottom - 2), 290, 1)) 'tray' 'Mise is still running here, near the clock. Click its icon for your routines, accounts and Re-arrange.' $true
+  } catch {}
+}
