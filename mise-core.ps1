@@ -1,6 +1,6 @@
 ﻿# Mise (shared edition) - core library. Dot-sourced by the runner, the tray and the builder.
 # Everything the routines can do lives here, driven by a JSON config:  %APPDATA%\Mise\config.json
-$script:MiseVersion = '0.7.1'
+$script:MiseVersion = '0.7.2'
 # feedback goes to a Google Form (no account needed); filled in when the form exists ('' = keep entries in a local queue)
 $script:FeedbackForm = ''
 $script:FeedbackFields = @{ type = ''; message = ''; name = ''; info = '' }
@@ -81,6 +81,8 @@ function Get-MiseConfig {
 # which routine is running now (set when a routine starts or is arranged, cleared when it exits)
 # shown once after an update (in the Mise window); keep it to what a user will notice
 $script:WhatsNew = @(
+  "Fixed: with a friend's stream tile, Mise kept opening Discord's voice view every 10 seconds to look for the stream. Now it only looks, and acts once it sees them LIVE."
+  "A stream tile has an on/off switch: Open the stream by itself."
   'A new first-time setup: add your League account, copy your screen into your first routine and try it, step by step.'
   'Edit routines shows you around the first time it opens, and small tips show once when you first need them.'
   'About > Replay setup runs the setup and the tips again.'

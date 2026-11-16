@@ -1,4 +1,4 @@
-﻿Mise (shared edition) 0.7.1 - everything in its place before you play
+﻿Mise (shared edition) 0.7.2 - everything in its place before you play
 (mise = short for 'mise en place', a chef's habit: everything in its place before service starts.)
 
 INSTALL
@@ -37,6 +37,8 @@ SPECIAL TILES
 - A friend's Discord stream: + Add app or page > A friend's Discord stream, type their Discord name. While the routine runs
   (a League routine: once League is open), Mise opens their stream when they go live in your voice channel, pops it out
   and places it here. Exiting the routine closes it.
+  Mise only looks at Discord until it sees LIVE next to their name in your voice channel's list; it presses
+  nothing before that. The tile's switch 'Open the stream by itself' turns it off without removing the tile.
 - Pop-up spot on the map (routine setting): where the small progress pop-up shows while the routine runs.
 - Right-click a tile > Quick size: full screen, halves, thirds or quarters.
 - Start with a program (routine setting): the routine starts by itself when that program (e.g. your game) opens.

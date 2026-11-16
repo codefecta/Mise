@@ -381,7 +381,6 @@ function Open-DiscordStream([string]$who, [bool]$allowClick, [bool]$mute = $fals
   try { Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop } catch { return @{ H = 0; Why = 'accessibility not available' } }
   $main = Get-DiscordMain
   if (-not $main) { return @{ H = 0; Why = 'Discord is not open' } }
-  if ([MiseWin]::IsIconic($main.H)) { [MiseWin]::ShowWindow($main.H, 4) | Out-Null; Start-Sleep -Milliseconds 600 }   # restore without taking focus
   $before = @(Get-WinSnapshot | Where-Object { (Get-ProcName $_.Pid) -eq 'Discord' } | ForEach-Object { [int64]$_.H })
   $root = [System.Windows.Automation.AutomationElement]::FromHandle($main.H)
   $els = Get-UiaAll $root
@@ -390,6 +389,15 @@ function Open-DiscordStream([string]$who, [bool]$allowClick, [bool]$mute = $fals
   $voiceLink = $els | Where-Object { (Get-UiaType $_) -eq 'Hyperlink' -and (Get-UiaName $_) -match '^\S.* / \S' -and (Get-UiaName $_) -notmatch '(?i)https?:|www\.' } | Select-Object -First 1
   if (-not $voiceLink) { return @{ H = 0; Why = 'you are not in a voice channel' } }
   $tiles = @(Get-StreamTiles $els); $live = @(Get-LiveNames $els); $opened = $false
+  # Mise only LOOKS at Discord until it sees this person live: a LIVE badge next to their name in the voice list, or their stream tile
+  # in the voice view. Without that, nothing in Discord is pressed, opened or restored.
+  $kWho = Get-NameKey $who
+  $seen = [bool](@($live | Where-Object { $ln = Get-NameKey $_; $ln -and $kWho -and ($ln.Contains($kWho) -or ($ln.Length -ge 3 -and $kWho.Contains($ln))) }).Count)
+  if (-not $seen -and -not (Select-StreamTile $tiles $live $who)) { return @{ H = 0; Why = "$who is not streaming in your voice channel"; Touched = $false } }
+  if ([MiseWin]::IsIconic($main.H)) {
+    [MiseWin]::ShowWindow($main.H, 4) | Out-Null; Start-Sleep -Milliseconds 600   # restore without taking focus
+    $els = Get-UiaAll $root; $tiles = @(Get-StreamTiles $els)
+  }
   if (-not $tiles.Count) {
     # the voice view is not showing: open it through the "channel / server" link next to Voice Connected.
     # NEVER press a voice channel's own button: that joins the channel.
@@ -402,7 +410,7 @@ function Open-DiscordStream([string]$who, [bool]$allowClick, [bool]$mute = $fals
   $tile = Select-StreamTile $tiles $live $who
   if (-not $tile) {
     if ($opened -and $back) { [void](Press-UiaElement $back $false) }
-    return @{ H = 0; Why = "$who is not streaming in your voice channel" }
+    return @{ H = 0; Why = "$who shows as live, but their stream was not found in the voice view"; Touched = $true }
   }
   # not watching yet: the tile has a Watch Stream button
   $watch = $els | Where-Object { (Get-UiaType $_) -eq 'Button' -and (Get-UiaName $_) -match $script:StreamWatch -and (Test-UiaInside $_ $tile.Rect) } | Select-Object -First 1
@@ -448,13 +456,15 @@ function Open-DiscordStream([string]$who, [bool]$allowClick, [bool]$mute = $fals
 }
 # the stream watcher: its own hidden process (so the tray never freezes while Discord is searched).
 # Runs while this routine is the active one (a League routine: only while League is open); checks every 10 s.
+# the routine's stream tile that is switched on and has a name (watch = $false: the tile only keeps its place on the map)
+function Get-WatchedStreamTile($routine) { return @(@($routine.tiles) | Where-Object { $_.kind -eq 'stream' -and "$($_.streamer)".Trim() -and $_.watch -ne $false })[0] }
 function Invoke-StreamWatch($cfg, $routine) {
   # one watcher at a time; when routines are switched, the old watcher needs a few seconds to stop
   $mx = New-Object System.Threading.Mutex($false, 'Local\MiseStream')
   try { if (-not $mx.WaitOne(20000)) { return } } catch [System.Threading.AbandonedMutexException] { }
-  $tile = @(@($routine.tiles) | Where-Object { $_.kind -eq 'stream' -and "$($_.streamer)".Trim() })[0]
+  $tile = Get-WatchedStreamTile $routine
   if (-not $tile) { return }
-  $who = "$($tile.streamer)".Trim(); $lastWhy = ''; $diagDone = $false; $next = [datetime]::MinValue
+  $who = "$($tile.streamer)".Trim(); $lastWhy = ''; $diagDone = $false; $next = [datetime]::MinValue; $fails = 0
   Write-Log "[stream] watching for $who's stream"
   $stamp = $(try { (Get-Item -LiteralPath $script:CfgPath).LastWriteTime } catch { $null })
   while ((Get-ActiveRoutineId) -eq $routine.id) {
@@ -465,8 +475,8 @@ function Invoke-StreamWatch($cfg, $routine) {
         $st = (Get-Item -LiteralPath $script:CfgPath).LastWriteTime
         if ($st -ne $stamp) {
           $stamp = $st; $c2 = Get-MiseConfig; $r2 = $c2.routines | Where-Object { $_.id -eq $routine.id } | Select-Object -First 1
-          $t2 = $null; if ($r2) { $t2 = @(@($r2.tiles) | Where-Object { $_.kind -eq 'stream' -and "$($_.streamer)".Trim() })[0] }
-          if (-not $t2) { Write-Log '[stream] tile removed from the routine'; break }
+          $t2 = $null; if ($r2) { $t2 = Get-WatchedStreamTile $r2 }
+          if (-not $t2) { Write-Log '[stream] tile removed or switched off'; break }
           $cfg = $c2; $routine = $r2; $tile = $t2; $who = "$($tile.streamer)".Trim()
         }
       } catch {}
@@ -492,9 +502,11 @@ function Invoke-StreamWatch($cfg, $routine) {
     if ($res.H) {
       Set-StreamWin $res.H; Set-WindowPlace ([IntPtr]$res.H) $px
       $c = @{ Track = @() }; Track-ForExit ([pscustomobject]@{ onExit = $(if ($tile.exit -eq 'leave') { 'leave' } else { 'close' }); name = "$($tile.name)" }) ([IntPtr]$res.H) $c; Save-ExitTrack $routine $c
-      Write-Log "[stream] $who's stream popped out and placed"; $lastWhy = ''
+      Write-Log "[stream] $who's stream popped out and placed"; $lastWhy = ''; $fails = 0
       continue
     }
+    # Mise pressed something in Discord and it did not work: wait longer each time (1, 2, 4 ... 10 minutes) instead of trying again every 10 s
+    if ($res.Touched -ne $false -and $res.Why -notlike '*not in a voice*' -and $res.Why -ne 'Discord is not open') { $fails++; $next = (Get-Date).AddMinutes([Math]::Min(10, [Math]::Pow(2, $fails - 1))) } else { $fails = 0 }
     if ($res.Why -ne $lastWhy) { Write-Log "[stream] $($res.Why)"; $lastWhy = $res.Why }
     # once: Discord shows something Mise can't use - write what it sees, so the button names can be fixed
     if (-not $diagDone -and $res.Why -notlike '*not streaming*' -and $res.Why -notlike '*not in a voice*' -and $res.Why -ne 'Discord is not open') { $diagDone = $true; Write-Log "[stream-diag] $(Get-StreamDiag $who)" }
@@ -503,7 +515,7 @@ function Invoke-StreamWatch($cfg, $routine) {
   Write-Log '[stream] watcher stopped'
 }
 function Start-StreamWatcher($routine, [string]$routineFile = '') {
-  if (-not @(@($routine.tiles) | Where-Object { $_.kind -eq 'stream' -and "$($_.streamer)".Trim() }).Count) { return }
+  if (-not (Get-WatchedStreamTile $routine)) { return }
   $run = Join-Path $script:MiseDir 'mise-run.ps1'
   $a = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$run`"", '-StreamWatch')
   if ($routineFile) { $a += @('-RoutineFile', "`"$routineFile`"") } else { $a += @('-Routine', "`"$($routine.id)`"") }

@@ -737,10 +737,14 @@ function Update-Side {
         $sb = New-MiseText 0 0 310 "$($t.streamer)"; $sb.Box.Tag = $t.id
         $sb.Box.Add_TextChanged({ param($s, $e) $tt = Get-Tile $s.Tag; if ($tt -and "$($tt.streamer)" -ne $s.Text.Trim()) { $tt | Add-Member -NotePropertyName streamer -NotePropertyValue $s.Text.Trim() -Force; Set-Dirty } })
         Add-Side $sb.Panel 38
+        $bWa = New-Btn 'Open the stream by itself' 0 0 310 38 'setting'; $bWa.IsSwitch = $true; $bWa.On = ($t.watch -ne $false); $bWa.Tag = $t.id
+        $bWa.Add_Click({ param($s, $e) $tt = Get-Tile $s.Tag; if ($tt) { $tt | Add-Member -NotePropertyName watch -NotePropertyValue (-not ($tt.watch -ne $false)) -Force; $s.On = ($tt.watch -ne $false); $s.Invalidate(); Set-Dirty; $canvas.Invalidate() } })
+        Add-Side $bWa 44
+        $tip.SetToolTip($bWa, 'Off: Mise leaves Discord alone. The tile only keeps its place on the map. Save to apply.')
         $bMu = New-Btn 'Open with sound off' 0 0 310 38 'setting'; $bMu.IsSwitch = $true; $bMu.On = [bool]$t.mute; $bMu.Tag = $t.id
         $bMu.Add_Click({ param($s, $e) $tt = Get-Tile $s.Tag; if ($tt) { $tt | Add-Member -NotePropertyName mute -NotePropertyValue (-not [bool]$tt.mute) -Force; $s.On = [bool]$tt.mute; $s.Invalidate(); Set-Dirty } })
         Add-Side $bMu 44
-        $null = Add-SideLabel 'Drag the tile to choose where the stream popout goes; drag an edge or corner to size it. While the routine runs (a League routine: once League is open) and you are in a voice call, Mise opens this friend''s stream when they go live, pops it out and puts it here. It never joins a channel for you. Saved changes move an open popout right away.' $script:fSmall $script:C.Muted 112
+        $null = Add-SideLabel 'Drag the tile to choose where the stream popout goes; drag an edge or corner to size it. While the routine runs (a League routine: once League is open) and you are in a voice call, Mise opens this friend''s stream when they go live, pops it out and puts it here. It only looks at Discord until it sees LIVE next to their name in your voice channel''s list; nothing is pressed before that. It never joins a channel for you.' $script:fSmall $script:C.Muted 128
       }
       'league' { $null = Add-SideLabel 'The League client keeps the size set in League. Drag it to choose where it opens.' $script:fSmall $script:C.Muted 40 }
       default { $null = Add-SideLabel $(if ($t.exe) { $t.exe } elseif ($t.appid) { $t.appid } else { 'Learned on the first run' }) $script:fSmall $script:C.Muted 36 }
@@ -949,7 +953,7 @@ $testTimer.Add_Tick({
     elseif ($lines -match "\[$n\] did not open") { $script:marks[$t.id] = 'Failed' }
     elseif ($lines -match "\[$n\] its screen is not connected") { $script:marks[$t.id] = 'No screen' }
     elseif ($t.kind -eq 'ugg') { $script:marks[$t.id] = 'Champ select' }
-    elseif ($t.kind -eq 'stream') { $script:marks[$t.id] = 'When live' }
+    elseif ($t.kind -eq 'stream') { $script:marks[$t.id] = $(if ($t.watch -eq $false) { 'Off' } else { 'When live' }) }
     if ($script:marks[$t.id] -eq 'Passed' -and ($lines -match "\[$n\] slow to open")) { $script:marks[$t.id] = 'Late' }
   }
   $bTest.Text = 'Test run'; $bTest.Enabled = $true; $bTest.Invalidate()

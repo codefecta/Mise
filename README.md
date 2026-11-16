@@ -46,7 +46,7 @@ Handy: **+ Add app or page** adds any installed app or a web page. Click a tile 
 - **Spotify mini player**: switch on *Mini player* in the tile (the tile shrinks to mini size).
 - **League client**: position only.
 - **Web page**: *Clean window* hides the address bar and tabs.
-- **A friend's Discord stream**: type their Discord display name. While the routine runs, when they stream in your voice channel Mise opens the stream, pops it out (stream only, no member strip) and puts it on this tile. In a League routine it waits until League is open. Be in the voice channel with Discord open. Exiting the routine closes the popout. Drag or resize the stream tile in Edit routines to set where the popout goes. Mise only acts while you are in a voice call and never joins a channel for you.
+- **A friend's Discord stream**: type their Discord display name. Mise only looks at Discord until it sees LIVE next to their name in your voice channel's list (so Discord has to be showing that server, or the voice view); it presses nothing before that. **Open the stream by itself** switches it off without removing the tile. While the routine runs, when they stream in your voice channel Mise opens the stream, pops it out (stream only, no member strip) and puts it on this tile. In a League routine it waits until League is open. Be in the voice channel with Discord open. Exiting the routine closes the popout. Drag or resize the stream tile in Edit routines to set where the popout goes. Mise only acts while you are in a voice call and never joins a channel for you.
 - **Pop-up spot on the map** (routine setting): switch it on and place the small progress box where you want it while this routine runs. Off: the corner from Settings.
 
 ### Routine settings
